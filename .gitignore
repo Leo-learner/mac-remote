@@ -1,0 +1,9 @@
+node_modules/
+bin/
+build/
+relay/data/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store

@@ -1,0 +1,84 @@
+# mac-remote
+
+用手机网页控制这台 Mac：打开 / 切换 / 隐藏 / 退出应用，以及控制中心里的 Wi-Fi、蓝牙、VPN、亮度、深色模式、夜览、台前调度、音量、输出设备和媒体键。
+
+```
+手机浏览器 ──HTTPS──▶ nginx(TLS) ──▶ relay (Node, 127.0.0.1:3030)                         [Azure]
+                                          ▲ WSS 出站长连接（设备令牌）
+                                          │
+MacRemote.app（菜单栏，持有系统权限）──spawn──▶ agent (Node) ──execFile──▶ macctl(Swift) / 系统命令   [Mac]
+```
+
+- **Mac 不监听任何端口**：agent 主动连出去，校园网 / NAT 后面也能用。
+- **白名单在 Mac 上执行**：所有能力都是 `shared/actions.js` 里的具名动作；relay 只转发，参数校验和风险判断（`agent/policy.js`）都在 agent 里。全系统没有执行任意命令的入口。
+- **公网只暴露一个中性登录页**（密码 + TOTP）；控制界面的 HTML/JS 也必须登录后才下发，全站 `noindex`。
+
+## 目录
+
+| 路径 | 作用 |
+|---|---|
+| `shared/actions.js` | 动作目录 + 参数形状校验（三端共用） |
+| `agent/` | Mac 端：注册表、策略、各项控制、状态快照、relay 客户端、审计 |
+| `helper/macctl.swift` | 原生小助手：应用列表/图标/退出、CoreAudio 输出设备、媒体键、夜览、内建屏亮度 |
+| `launcher/` | `MacRemote.app` 菜单栏壳：拉起 agent、显示连接状态、一键暂停、登录时启动 |
+| `relay/` | Azure 端：登录（scrypt + TOTP + 会话）、转发、静态资源闸门；`deploy/` 里是 systemd 与 nginx 模板 |
+| `web/public/` | 公开的中性登录页与 PWA 图标 |
+| `web/app/` | 控制界面（仅登录后可访问） |
+| `scripts/preview.js` | 本机 UI 预览：读取真实状态，所有修改仅模拟 |
+| `scripts/smoke-relay.js` | 端到端冒烟测试（登录 → 状态 → 图标 → 一次无害动作） |
+
+## 本机开发
+
+```bash
+npm run setup          # 安装 agent / relay 依赖并编译 bin/macctl
+npm test               # 参数校验、TOTP、会话、限流、策略不变量、relay 安全边界
+npm run preview        # http://127.0.0.1:3099/app/ （无需登录，改动仅模拟）
+node agent/cli.js state.get                              # 直接调用单个动作
+node agent/cli.js sound.volume.set '{"value":30}'
+```
+
+完整链路（本机 relay + agent）：
+
+```bash
+MAC_REMOTE_CONFIG=/tmp/agent-dev.json node agent/setup.js ws://127.0.0.1:3030/agent   # 打印 AGENT_TOKEN_SHA256
+node relay/setup.js --env /tmp/relay-dev.env --agent-hash <上一步的哈希>               # 设置密码、生成 TOTP
+node --env-file=/tmp/relay-dev.env relay/server.js
+MAC_REMOTE_CONFIG=/tmp/agent-dev.json node agent/index.js
+```
+
+## 在 Mac 上常驻
+
+```bash
+node agent/setup.js wss://<子域>.dkz12345.com/agent   # 生成设备令牌；把打印的 AGENT_TOKEN_SHA256 填进服务器的 relay/.env
+bash launcher/build.sh                                 # 编译、签名、安装 ~/Applications/MacRemote.app
+open ~/Applications/MacRemote.app
+```
+
+首次运行时按提示授权：**蓝牙**（开关蓝牙）、**自动化 → System Events**（深色模式）、**辅助功能**（媒体键，菜单里有入口）。菜单栏里可以勾选「登录时自动启动」，也可以随时「暂停远程控制」。
+
+## 部署 relay 到 Azure
+
+1. 在域名服务商添加 A 记录：`<子域>.dkz12345.com → 20.48.14.96`（子域名请取中性的名字）。
+2. 同步代码：`rsync -a --exclude node_modules relay web shared <服务器>:/opt/apps/mac-remote-relay/`，然后在服务器上 `cd /opt/apps/mac-remote-relay/relay && npm install --omit=dev`。
+3. 在服务器上生成密钥：`node setup.js --env .env --agent-hash <Mac 上打印的哈希>`，并设置 `PUBLIC_ORIGIN=https://<子域>.dkz12345.com`。把 TOTP 设置密钥加进手机的验证器（iOS「密码」App 即可）。
+4. `relay/deploy/mac-remote-relay.service` → `/etc/systemd/system/`，`systemctl enable --now mac-remote-relay`。
+5. `relay/deploy/nginx.conf` → `sites-available`（替换子域名），`nginx -t && systemctl reload nginx`，再 `certbot --nginx -d <子域>.dkz12345.com`。
+6. 验证：`node scripts/smoke-relay.js --env <env 文件> --password-file <文件>`。
+
+## 风险策略
+
+`agent/policy.js` 是唯一决定「能不能做」的地方（Leo 定的规则）：
+
+- Wi-Fi 只能远程打开，**不能远程关闭**（关掉就失联了）。
+- **MacRemote 自己和 Clash Verge 不能被远程退出**。
+- 连接 / 断开 NordVPN（任何 VPN 服务）要在手机上**确认**；强制退出也要确认。
+- **没有关机、重启、睡眠**：动作目录里根本没有这类动作；`test/power.test.js` 会扫描动作目录和 agent 源码，一旦有人加进来就报错。
+
+对应测试：`test/policy.test.js`、`test/power.test.js`。
+
+## 已知限制
+
+- 合盖的 MacBook 断电或拔掉外接屏会睡眠，届时无法远程访问。
+- 外接显示器的 DDC 读数偶尔失败（已做重试）；MonitorControl 同时调节时滑块可能不同步。
+- 夜览与内建屏亮度依赖私有框架，系统更新后若失效会自动隐藏对应控件。
+- 媒体键只能控制播放，不显示曲目信息（macOS 15.4 起限制了 MediaRemote）。

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Embedded into bin/macctl (__TEXT,__info_plist). CFBundleAllowMixedLocalizations lets an
+     unbundled CLI resolve app display names in the user's language instead of English. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>dev.mac-remote.macctl</string>
+    <key>CFBundleName</key>
+    <string>macctl</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleAllowMixedLocalizations</key>
+    <true/>
+</dict>
+</plist>

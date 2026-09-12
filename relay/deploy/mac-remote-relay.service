@@ -1,0 +1,22 @@
+# /etc/systemd/system/mac-remote-relay.service  (same shape as ai-chat.service)
+[Unit]
+Description=mac-remote relay
+After=network.target
+
+[Service]
+Type=simple
+User=leo
+Group=leo
+WorkingDirectory=/opt/apps/mac-remote-relay/relay
+EnvironmentFile=/opt/apps/mac-remote-relay/relay/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/apps/mac-remote-relay/relay/data
+
+[Install]
+WantedBy=multi-user.target

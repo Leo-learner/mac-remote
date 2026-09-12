@@ -1,0 +1,20 @@
+{
+  "name": "mac-remote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Control this Mac from a phone through a relay: apps plus Control Center toggles.",
+  "type": "module",
+  "scripts": {
+    "setup": "npm --prefix agent install && npm --prefix relay install && bash helper/build.sh",
+    "build:helper": "bash helper/build.sh",
+    "icons": "swift helper/make-icons.swift web/public/icons",
+    "preview": "node scripts/preview.js",
+    "test": "node --test test/*.test.js",
+    "relay": "node relay/server.js",
+    "agent": "node agent/index.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "license": "MIT"
+}

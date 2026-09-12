@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0a0d12">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Orbit">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/favicon.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/login.css">
+<script type="module" src="/login.js"></script>
+<title>Orbit</title>
+</head>
+<body>
+<main class="gate">
+  <svg class="emblem" viewBox="0 0 120 120" aria-hidden="true">
+    <circle class="ring ring-outer" cx="60" cy="60" r="54"/>
+    <circle class="ring" cx="60" cy="60" r="36"/>
+    <circle class="core" cx="60" cy="60" r="9"/>
+    <g class="orbiter"><circle class="moon" cx="96" cy="60" r="6"/></g>
+  </svg>
+  <h1 class="wordmark">Orbit</h1>
+  <form id="gate-form" class="gate-form" novalidate>
+    <input class="sr-only" type="text" name="username" autocomplete="username" value="orbit" tabindex="-1" aria-hidden="true">
+    <label class="field">
+      <span>密码</span>
+      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+    </label>
+    <label class="field">
+      <span>验证码</span>
+      <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="••••••" required>
+    </label>
+    <button id="submit" type="submit">进入</button>
+    <p id="message" class="message" role="alert"></p>
+  </form>
+</main>
+</body>
+</html>
