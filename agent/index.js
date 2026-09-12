@@ -70,12 +70,24 @@ async function tick() {
   schedule();
 }
 
+let stopping = false;
 function stopAgent() {
+  if (stopping) return;
+  stopping = true;
   clearTimeout(timer);
   client.stop();
   setTimeout(() => process.exit(0), 200);
 }
 process.on('SIGTERM', stopAgent);
 process.on('SIGINT', stopAgent);
+process.stdout.on('error', stopAgent); // EPIPE: nobody reads the reports any more
+
+// Under MacRemote, stdin is a pipe the launcher holds open. EOF means the launcher is gone,
+// even if it was killed outright, so the agent must not linger as an orphan.
+if (process.env.MAC_REMOTE_PARENT_PIPE === '1') {
+  process.stdin.on('end', stopAgent);
+  process.stdin.on('error', stopAgent);
+  process.stdin.resume();
+}
 
 report('started', { version: VERSION, relay: new URL(config.relayUrl).host });

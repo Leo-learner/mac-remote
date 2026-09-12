@@ -30,6 +30,7 @@ NODE="$(command -v node)"
 printf '{\n  "node": "%s"\n}\n' "$NODE" > "$SUPPORT/launcher.json"
 
 pkill -x MacRemote 2>/dev/null || true
+pkill -f "MacRemote.app/Contents/Resources/agent/index.js" 2>/dev/null || true # agents from older builds outlive their launcher
 rm -rf build # older versions left a second, launchable copy here
 mkdir -p "$HOME/Applications"
 rm -rf "$HOME/Applications/MacRemote.app"

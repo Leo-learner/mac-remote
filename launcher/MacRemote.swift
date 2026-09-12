@@ -28,6 +28,7 @@ final class Agent {
     var onEvent: ([String: Any]) -> Void = { _ in }
     var onExit: (Int32) -> Void = { _ in }
     private var process: Process?
+    private var lifeline: Pipe?
     private var pending = Data()
     private var log: FileHandle?
 
@@ -39,7 +40,14 @@ final class Agent {
         process.arguments = [script]
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["MAC_REMOTE_PARENT_PIPE"] = "1"
         process.environment = environment
+
+        // We hold the write end of the child's stdin for as long as we live. When this app exits,
+        // even by SIGKILL, the child reads EOF and stops instead of lingering as an orphan.
+        let lifeline = Pipe()
+        process.standardInput = lifeline
+        self.lifeline = lifeline
 
         let pipe = Pipe()
         process.standardOutput = pipe
