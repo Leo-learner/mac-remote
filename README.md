@@ -49,21 +49,31 @@ MAC_REMOTE_CONFIG=/tmp/agent-dev.json node agent/index.js
 ## 在 Mac 上常驻
 
 ```bash
-node agent/setup.js wss://<子域>.dkz12345.com/agent   # 生成设备令牌；把打印的 AGENT_TOKEN_SHA256 填进服务器的 relay/.env
+node agent/setup.js wss://control.dkz12345.com/agent  # 生成设备令牌；把打印的 AGENT_TOKEN_SHA256 填进服务器的 relay/.env
 bash launcher/build.sh                                 # 编译、签名、安装 ~/Applications/MacRemote.app
 open ~/Applications/MacRemote.app
 ```
 
 首次运行时按提示授权：**蓝牙**（开关蓝牙）、**自动化 → System Events**（深色模式）、**辅助功能**（媒体键，菜单里有入口）。菜单栏里可以勾选「登录时自动启动」，也可以随时「暂停远程控制」。
 
-## 部署 relay 到 Azure
+## 部署：control.dkz12345.com
 
-1. 在域名服务商添加 A 记录：`<子域>.dkz12345.com → 20.48.14.96`（子域名请取中性的名字）。
-2. 同步代码：`rsync -a --exclude node_modules relay web shared <服务器>:/opt/apps/mac-remote-relay/`，然后在服务器上 `cd /opt/apps/mac-remote-relay/relay && npm install --omit=dev`。
-3. 在服务器上生成密钥：`node setup.js --env .env --agent-hash <Mac 上打印的哈希>`，并设置 `PUBLIC_ORIGIN=https://<子域>.dkz12345.com`。把 TOTP 设置密钥加进手机的验证器（iOS「密码」App 即可）。
-4. `relay/deploy/mac-remote-relay.service` → `/etc/systemd/system/`，`systemctl enable --now mac-remote-relay`。
-5. `relay/deploy/nginx.conf` → `sites-available`（替换子域名），`nginx -t && systemctl reload nginx`，再 `certbot --nginx -d <子域>.dkz12345.com`。
-6. 验证：`node scripts/smoke-relay.js --env <env 文件> --password-file <文件>`。
+relay 部署在 `leo@20.48.14.96:/opt/apps/mac-remote-relay`：systemd 服务 `mac-remote-relay`（只监听 127.0.0.1:3030），nginx 站点 `control.dkz12345.com`（模板见 `relay/deploy/`），Let's Encrypt 证书由 certbot 续期。
+
+更新代码：
+
+```bash
+rsync -az --delete --exclude node_modules --exclude data --exclude .env -e "ssh -i <私钥>" relay web shared leo@20.48.14.96:/opt/apps/mac-remote-relay/
+ssh -i <私钥> leo@20.48.14.96 'cd /opt/apps/mac-remote-relay/relay && npm ci --omit=dev && sudo systemctl restart mac-remote-relay'
+```
+
+登录密码和 TOTP 只在服务器上生成，设置或更换都用这一条（需要交互终端，TOTP 设置密钥加进手机验证器，iOS「密码」App 即可）：
+
+```bash
+ssh -t -i <私钥> leo@20.48.14.96 'cd /opt/apps/mac-remote-relay/relay && node setup.js --env .env && sudo systemctl restart mac-remote-relay'
+```
+
+Mac 重新配对（`node agent/setup.js wss://control.dkz12345.com/agent --force`）后，要把新打印的 `AGENT_TOKEN_SHA256` 同步到服务器的 `relay/.env`。
 
 ## 风险策略
 

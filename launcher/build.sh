@@ -2,16 +2,18 @@
 # Build MacRemote.app (menu bar shell + bundled agent) and install it to ~/Applications.
 # The agent is copied into the bundle so it does not read code from the TCC-protected Desktop.
 # Signing with an Apple Development identity keeps granted permissions across rebuilds.
+# The bundle is assembled in a temporary directory, so the installed copy is the only one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="build/MacRemote.app"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+APP="$WORK/MacRemote.app"
 SUPPORT="$HOME/Library/Application Support/MacRemote"
 
 bash helper/build.sh
 npm --prefix agent install --omit=dev --no-audit --no-fund >/dev/null
 
-rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -swift-version 5 launcher/MacRemote.swift -o "$APP/Contents/MacOS/MacRemote"
 cp launcher/Info.plist "$APP/Contents/Info.plist"
@@ -28,9 +30,10 @@ NODE="$(command -v node)"
 printf '{\n  "node": "%s"\n}\n' "$NODE" > "$SUPPORT/launcher.json"
 
 pkill -x MacRemote 2>/dev/null || true
+rm -rf build # older versions left a second, launchable copy here
 mkdir -p "$HOME/Applications"
 rm -rf "$HOME/Applications/MacRemote.app"
-cp -R "$APP" "$HOME/Applications/"
+ditto "$APP" "$HOME/Applications/MacRemote.app"
 
 echo "installed ~/Applications/MacRemote.app"
 echo "  signed with: $([ "$IDENTITY" = "-" ] && echo ad-hoc || echo "$IDENTITY" | sed -E 's/\(.*\)//')"
