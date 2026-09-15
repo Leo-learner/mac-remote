@@ -17,7 +17,8 @@ const READERS = {
   vpns: { ttl: 15_000, read: network.listVpns },
   dark: { ttl: 5_000, read: display.getDark },
   stageManager: { ttl: 5_000, read: display.getStageManager },
-  ddc: { ttl: 15_000, read: display.ddcScreens },
+  // A DDC read takes seconds (replies are queued 400 ms apart), so it refreshes in the background.
+  ddc: { ttl: 30_000, background: true, read: display.ddcScreens },
   battery: { ttl: 60_000, read: system.battery },
   host: { ttl: 3_600_000, read: system.computerName },
 };
@@ -63,6 +64,9 @@ function read(name) {
       return value;
     })());
   }
+  // A background reader answers with its last value while it refreshes; only a reader with no
+  // value yet makes the snapshot wait.
+  if (reader.background && entry) return Promise.resolve(entry.value);
   return inflight.get(name);
 }
 
