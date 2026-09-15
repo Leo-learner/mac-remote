@@ -15,7 +15,6 @@ const ctx = {
 };
 const runsUnattended = (decision) => decision.allow === true && !decision.needsConfirm;
 const asksFirst = (decision) => decision.allow === true && decision.needsConfirm === true;
-const VPN_ID = 'B0859091-E5F2-4FF0-9AD7-7D63A703DC9C';
 
 test('harmless actions run without confirmation', () => {
   const cases = [
@@ -50,6 +49,8 @@ test('force-quitting an ordinary app asks first', () => {
   assert.ok(asksFirst(assessRisk('apps.forceQuit', { pid: 200 }, ctx)));
 });
 
-test('connecting or disconnecting a VPN asks first', () => {
-  for (const on of [true, false]) assert.ok(asksFirst(assessRisk('vpn.set', { id: VPN_ID, on }, ctx)), `on=${on}`);
+// Replaced the VPN switch on 2026-09-16. The agent reaches the relay directly, so the system
+// proxy can never cut the phone off from the Mac.
+test("switching Clash Verge's system proxy runs without confirmation", () => {
+  for (const on of [true, false]) assert.ok(runsUnattended(assessRisk('proxy.set', { on }, ctx)), `on=${on}`);
 });

@@ -18,10 +18,13 @@
 // The owner's rules (Leo, 2026-09-12):
 //   - Wi-Fi can be switched on remotely, never off.
 //   - MacRemote itself and Clash Verge can never be quit remotely.
-//   - Connecting or disconnecting a VPN (NordVPN) needs confirmation on the phone.
 //   - Force quit always asks first: it throws away unsaved work.
 //   - Power actions (shutting down, rebooting, sleeping) do not exist in the action catalog at
 //     all; test/power.test.js fails if one is ever added.
+//
+// Clash Verge's system proxy switch (proxy.set) replaced the NordVPN switch and its confirmation
+// on 2026-09-16. It runs unattended: the agent reaches the relay directly, so switching the system
+// proxy never cuts the phone off from the Mac.
 
 const PROTECTED_APPS = new Set([
   'dev.mac-remote.launcher', // this remote control itself
@@ -49,11 +52,6 @@ export function assessRisk(action, params, ctx) {
         ? confirm(`强制退出「${app?.name ?? '这个应用'}」会丢失未保存的内容`)
         : allow();
     }
-
-    case 'vpn.set':
-      return confirm(params.on
-        ? '连接 VPN 会改变这台 Mac 的网络路线，页面可能短暂断开'
-        : '断开 VPN 后，这台 Mac 可能短暂离线');
 
     default:
       return allow();

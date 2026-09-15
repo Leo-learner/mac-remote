@@ -1,6 +1,6 @@
 # mac-remote
 
-用手机网页控制这台 Mac：打开 / 切换 / 隐藏 / 退出应用，以及控制中心里的 Wi-Fi、蓝牙、VPN、亮度、深色模式、夜览、台前调度、音量、输出设备和媒体键。
+用手机网页控制这台 Mac：打开 / 切换 / 隐藏 / 退出应用，以及控制中心里的 Wi-Fi、蓝牙、Clash Verge 系统代理、亮度、深色模式、夜览、台前调度、音量、输出设备和媒体键。
 
 ```
 手机浏览器 ──HTTPS──▶ nginx(TLS) ──▶ relay (Node, 127.0.0.1:3030)                         [Azure]
@@ -81,7 +81,7 @@ Mac 重新配对（`node agent/setup.js wss://control.dkz12345.com/agent --force
 
 - Wi-Fi 只能远程打开，**不能远程关闭**（关掉就失联了）。
 - **MacRemote 自己和 Clash Verge 不能被远程退出**。
-- 连接 / 断开 NordVPN（任何 VPN 服务）要在手机上**确认**；强制退出也要确认。
+- 强制退出要在手机上**确认**。Clash Verge 系统代理的开关直接执行：agent 直连中继、不走系统代理，开关它不会让手机失联；开启前会先检查 Clash 是否在监听，免得 Mac 上的应用断网。
 - **没有关机、重启、睡眠**：动作目录里根本没有这类动作；`test/power.test.js` 会扫描动作目录和 agent 源码，一旦有人加进来就报错。
 
 对应测试：`test/policy.test.js`、`test/power.test.js`。

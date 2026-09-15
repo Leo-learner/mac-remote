@@ -36,11 +36,9 @@ function simulate(action, params, confirmed) {
     case 'bluetooth.set':
       s.network.bluetooth = { on: params.on };
       return { on: params.on };
-    case 'vpn.set': {
-      const vpn = s.network.vpns.find((item) => item.id === params.id);
-      if (vpn) vpn.connected = params.on;
-      return { id: params.id, name: vpn?.name, on: params.on };
-    }
+    case 'proxy.set':
+      s.network.proxy = { ...(s.network.proxy ?? {}), on: params.on };
+      return { on: params.on };
     case 'display.brightness.set': {
       const screen = s.display.screens.find((item) => item.id === params.display);
       if (screen) screen.brightness = params.value;

@@ -20,7 +20,7 @@ const HANDLERS = {
   'apps.forceQuit': apps.forceQuit,
   'wifi.set': network.setWifi,
   'bluetooth.set': network.setBluetooth,
-  'vpn.set': network.setVpn,
+  'proxy.set': network.setSystemProxy,
   'display.brightness.set': display.setBrightness,
   'display.dark.set': display.setDark,
   'display.nightShift.set': display.setNightShift,

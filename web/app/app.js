@@ -22,7 +22,10 @@ const ERRORS = {
   'bad-params': '参数不合法',
   'no-such-app': '找不到这个应用',
   'no-such-device': '找不到这个输出设备',
-  'no-such-vpn': '找不到这个 VPN',
+  'clash-not-installed': '这台 Mac 上没有 Clash Verge',
+  'clash-not-running': 'Clash Verge 没在运行，现在开系统代理会让 Mac 上不了网',
+  'clash-pac-mode': 'Clash Verge 用的是 PAC 模式，暂不支持远程切换',
+  'no-network-service': '找不到 Mac 当前使用的网络',
   'no-such-display': '找不到这个显示器',
   'accessibility-not-granted': '需要先在 Mac 上授予「辅助功能」权限',
   'nightshift-unavailable': '这台 Mac 上夜览不可用',
@@ -196,15 +199,17 @@ const TOGGLES = {
     },
     run: (next) => act('bluetooth.set', { on: next }),
   },
-  vpn: {
-    on: (s) => (s.network?.vpns ?? []).some((vpn) => vpn.connected),
-    available: (s) => (s.network?.vpns ?? []).length > 0,
+  proxy: {
+    on: (s) => Boolean(s.network?.proxy?.on),
+    available: (s) => Boolean(s.capabilities?.systemProxy) && !s.network?.proxy?.pac,
     sub: (s) => {
-      const vpns = s.network?.vpns ?? [];
-      return vpns.find((vpn) => vpn.connected)?.name ?? (vpns.length ? '未连接' : '没有 VPN 配置');
+      const proxy = s.network?.proxy;
+      if (!proxy) return '没有找到 Clash Verge';
+      if (proxy.pac) return 'PAC 模式，暂不支持';
+      if (proxy.on) return '已开启 · Clash Verge';
+      return proxy.elsewhere ? '指向其他代理' : '已关闭';
     },
-    run: () => chooseVpn(),
-    optimistic: false,
+    run: (next) => act('proxy.set', { on: next }),
   },
   dark: {
     on: (s) => Boolean(s.display?.dark),
@@ -259,19 +264,6 @@ document.addEventListener('click', async (event) => {
     if (view.state) renderToggles(view.state);
   }
 });
-
-async function chooseVpn() {
-  const vpns = view.state?.network?.vpns ?? [];
-  const pick = await sheet({
-    title: 'VPN',
-    message: '连接或断开 VPN 时，Mac 可能会短暂离线。',
-    options: vpns.map((vpn) => ({ label: vpn.name, detail: vpn.connected ? '点按断开' : '点按连接', value: vpn, checked: vpn.connected })),
-  });
-  if (!pick) return null;
-  const result = await act('vpn.set', { id: pick.id, on: !pick.connected });
-  if (result) toast(pick.connected ? `正在断开「${pick.name}」` : `正在连接「${pick.name}」`);
-  return result;
-}
 
 // ---- media ---------------------------------------------------------------------------------
 

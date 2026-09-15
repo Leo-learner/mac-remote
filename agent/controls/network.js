@@ -1,5 +1,9 @@
-// Wi-Fi (networksetup), Bluetooth (blueutil) and VPN services (scutil --nc).
+// Wi-Fi (networksetup), Bluetooth (blueutil) and Clash Verge's system proxy (networksetup).
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { connect } from 'node:net';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { ActionError, BIN, run, runOrThrow } from '../exec.js';
 
 let wifiDevice = null;
@@ -56,19 +60,88 @@ export async function setBluetooth({ on }) {
   return { on };
 }
 
-// * (Disconnected)   6A3D2F1B-…-…  PPP --> L2TP   "Office VPN"   [PPP/L2TP]
-export async function listVpns() {
-  const result = await run(BIN.scutil, ['--nc', 'list']);
-  if (!result.ok) return [];
-  return result.stdout.split('\n').flatMap((line) => {
-    const match = line.match(/\(([^)]+)\)\s+([0-9A-Fa-f-]{36})\s.*?"(.+)"/);
-    return match ? [{ id: match[2], name: match[3], status: match[1], connected: match[1] === 'Connected' }] : [];
+// Clash Verge's "System Proxy" switch points the primary network service's web, secure web and
+// SOCKS proxies at its mixed port, and switches them off again. Clash Verge offers no way to flip
+// that switch from outside (no URL action for it, no hotkey set up), so the agent makes the same
+// change itself. Clash Verge's window keeps showing its own last state, and Clash Verge applies
+// its saved setting again when it starts.
+const CLASH_SETTINGS = join(homedir(), 'Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/verge.yaml');
+const PROXY_KINDS = [
+  { key: 'HTTP', set: '-setwebproxy', state: '-setwebproxystate' },
+  { key: 'HTTPS', set: '-setsecurewebproxy', state: '-setsecurewebproxystate' },
+  { key: 'SOCKS', set: '-setsocksfirewallproxy', state: '-setsocksfirewallproxystate' },
+];
+
+// verge.yaml is YAML, but the keys needed here are plain `key: value` lines.
+export function parseClashSettings(yaml) {
+  const field = (key) => yaml.match(new RegExp(`^${key}:[ \\t]*['"]?([^'"\\s#]+)`, 'm'))?.[1];
+  const host = field('proxy_host') ?? '127.0.0.1';
+  const port = Number(field('verge_mixed_port') ?? 7897);
+  if (!/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isInteger(port) || port < 1 || port > 65_535) return null;
+  return { host, port, pac: field('proxy_auto_config') === 'true' };
+}
+
+// `scutil --proxy` shows the settings in effect, which are the primary network service's.
+export function parseProxyState(scutil, clash) {
+  const field = (key) => scutil.match(new RegExp(`^\\s*${key} : (\\S+)`, 'm'))?.[1];
+  const enabled = PROXY_KINDS.filter(({ key }) => field(`${key}Enable`) === '1');
+  const toClash = enabled.filter(({ key }) => field(`${key}Proxy`) === clash.host && Number(field(`${key}Port`)) === clash.port);
+  return { on: toClash.length > 0, elsewhere: toClash.length < enabled.length };
+}
+
+async function clashSettings() {
+  try {
+    return parseClashSettings(await readFile(CLASH_SETTINGS, 'utf8'));
+  } catch {
+    return null; // Clash Verge is not installed
+  }
+}
+
+// Returns null when Clash Verge is not installed.
+export async function getSystemProxy() {
+  const clash = await clashSettings();
+  if (!clash) return null;
+  const result = await run(BIN.scutil, ['--proxy']);
+  if (!result.ok) return null;
+  return { ...parseProxyState(result.stdout, clash), host: clash.host, port: clash.port, pac: clash.pac };
+}
+
+// "(2) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)": the enabled service whose device carries the
+// default route, else the Wi-Fi service (a VPN tunnel has no service of its own in this list).
+async function primaryService() {
+  const listing = await runOrThrow(BIN.networksetup, ['-listnetworkserviceorder']);
+  const services = [...listing.matchAll(/^\(\d+\)\s+(.+)\n\(Hardware Port: [^,]*, Device: ([^)]*)\)/gm)]
+    .map((match) => ({ name: match[1].trim(), device: match[2].trim() }));
+  for (const device of [await uplinkInterface(), await findWifiDevice()]) {
+    const service = services.find((item) => item.device === device);
+    if (service) return service.name;
+  }
+  throw new ActionError('no-network-service');
+}
+
+function portOpen(host, port, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const socket = connect({ host, port });
+    const finish = (open) => {
+      socket.destroy();
+      resolve(open);
+    };
+    socket.setTimeout(timeoutMs, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
   });
 }
 
-export async function setVpn({ id, on }) {
-  const vpn = (await listVpns()).find((item) => item.id === id);
-  if (!vpn) throw new ActionError('no-such-vpn');
-  await runOrThrow(BIN.scutil, ['--nc', on ? 'start' : 'stop', id]);
-  return { id, name: vpn.name, on };
+export async function setSystemProxy({ on }) {
+  const clash = await clashSettings();
+  if (!clash) throw new ActionError('clash-not-installed');
+  if (clash.pac) throw new ActionError('clash-pac-mode');
+  // Pointing every app at a Clash that is not listening would cut them all off. (The agent reaches
+  // the relay directly, so it stays reachable either way.)
+  if (on && !(await portOpen(clash.host, clash.port))) throw new ActionError('clash-not-running');
+  const service = await primaryService();
+  for (const kind of PROXY_KINDS) {
+    await runOrThrow(BIN.networksetup, on ? [kind.set, service, clash.host, String(clash.port)] : [kind.state, service, 'off']);
+  }
+  return { on, service };
 }

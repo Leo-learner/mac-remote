@@ -14,7 +14,7 @@ const READERS = {
   uplink: { ttl: 15_000, read: network.uplinkInterface },
   // blueutil aborts (and writes a crash report) without permission: back off after a failure.
   bluetooth: { ttl: 10_000, retryAfterFailure: 5 * 60_000, read: network.getBluetooth },
-  vpns: { ttl: 15_000, read: network.listVpns },
+  proxy: { ttl: 5_000, read: network.getSystemProxy }, // Clash Verge's system proxy
   dark: { ttl: 5_000, read: display.getDark },
   stageManager: { ttl: 5_000, read: display.getStageManager },
   // A DDC read takes seconds (replies are queued 400 ms apart), so it refreshes in the background.
@@ -26,7 +26,7 @@ const READERS = {
 const INVALIDATES = {
   'wifi.set': ['wifi', 'uplink'],
   'bluetooth.set': ['bluetooth'],
-  'vpn.set': ['vpns', 'uplink'],
+  'proxy.set': ['proxy'],
   'display.brightness.set': ['ddc', 'native'],
   'display.dark.set': ['dark'],
   'display.nightShift.set': ['native'],
@@ -89,6 +89,7 @@ export async function snapshot() {
     host: { name: values.host },
     capabilities: {
       bluetooth: values.bluetooth !== null,
+      systemProxy: values.proxy !== null,
       brightness: screens.length > 0,
       nightShift: Boolean(native.nightShift),
       stageManager: values.stageManager !== null,
@@ -98,7 +99,7 @@ export async function snapshot() {
       wifi: wifi ? { ...wifi, isUplink: wifi.device === values.uplink } : null,
       uplink: values.uplink,
       bluetooth: values.bluetooth,
-      vpns: values.vpns ?? [],
+      proxy: values.proxy,
     },
     display: {
       dark: values.dark,
