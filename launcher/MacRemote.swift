@@ -2,7 +2,8 @@
 //
 // macOS attributes privacy permissions (Bluetooth, Automation, Accessibility) to the app that
 // launched a process. Running the Node agent as our child gives every command it spawns one
-// stable identity: this signed bundle. The menu shows the relay link and is the local kill switch.
+// stable identity: this signed bundle. The menu shows the relay link, carries the local controls
+// for the external display, and is the local kill switch.
 // Opening the app (or opening it again) shows a status window with the permission checklist.
 //
 // Build + install: bash launcher/build.sh
@@ -70,6 +71,13 @@ final class Agent {
     func stop() {
         guard let process, process.isRunning else { return }
         process.terminate()
+    }
+
+    // The menu bar's own controls travel down the same pipe that keeps the agent alive. The agent
+    // runs them through its allow-list, exactly like a request from the phone.
+    func send(_ request: [String: Any]) {
+        guard isRunning, let lifeline, let data = try? JSONSerialization.data(withJSONObject: request) else { return }
+        try? lifeline.fileHandleForWriting.write(contentsOf: data + Data("\n".utf8))
     }
 
     private func openLog() -> FileHandle? {
@@ -184,7 +192,7 @@ struct StatusView: View {
                     .disabled(!model.configured)
                     .keyboardShortcut(.defaultAction)
             }
-            Text("关掉这个窗口后，MacRemote 仍在菜单栏里运行；再次打开 App 会重新显示这里。")
+            Text("菜单栏图标里有外接屏的亮度滑块；关掉这个窗口后 MacRemote 仍在菜单栏运行，再次打开 App 会重新显示这里。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -200,6 +208,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private let statusLine = NSMenuItem(title: "正在启动…", action: nil, keyEquivalent: "")
     private var pauseItem: NSMenuItem!
     private var loginItem: NSMenuItem!
+    private var displayPowerItem: NSMenuItem!
+    private var brightnessItem: NSMenuItem!
+    private let brightnessSlider = NSSlider(value: 50, minValue: 0, maxValue: 100, target: nil, action: nil)
+    private let brightnessReadout = NSTextField(labelWithString: "—")
     private let agent = Agent()
     private let model = StatusModel()
     private var window: NSWindow?
@@ -209,6 +221,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var link = "starting"
     private var restartDelay: TimeInterval = 1
     private var startedAt = Date()
+    private var requestCounter = 0
+    private var screenId: String?
+    private var screenName = ""
+    private var displayAsleep = false
+    private var pendingBrightness: Int?
+    private var brightnessTimer: Timer?
+    private var lastBrightnessSend = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One MacRemote at a time: a second launch (another copy, or a double click while it is
@@ -224,6 +243,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         _ = DistributedNotificationCenter.default().addObserver(
             forName: showWindowNotification, object: nil, queue: .main) { [weak self] _ in self?.showWindow() }
+
+        // Writing to the agent's pipe after it died must not take this app down with it.
+        signal(SIGPIPE, SIG_IGN)
 
         wireModel()
         buildMenu()
@@ -245,6 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func menuWillOpen(_ menu: NSMenu) {
         render()
+        askScreens()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -271,7 +294,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         statusLine.isEnabled = false
         pauseItem = item("暂停远程控制", #selector(togglePause))
         loginItem = item("登录时自动启动", #selector(toggleLoginItem))
+        displayPowerItem = item("关闭显示器", #selector(toggleDisplayPower))
+        brightnessItem = makeBrightnessItem()
         menu.addItem(statusLine)
+        menu.addItem(.separator())
+        menu.addItem(brightnessItem)
+        menu.addItem(displayPowerItem)
         menu.addItem(.separator())
         menu.addItem(item("显示状态窗口…", #selector(showWindow)))
         menu.addItem(item("打开控制面板", #selector(openPanel)))
@@ -283,6 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(.separator())
         menu.addItem(item("退出 MacRemote", #selector(quit), key: "q"))
         statusItem.menu = menu
+        showDisplayControls(false)
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -291,10 +320,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return item
     }
 
+    // A slider lives in the menu as a custom view, so dragging it keeps the menu open.
+    private func makeBrightnessItem() -> NSMenuItem {
+        let label = NSTextField(labelWithString: "亮度")
+        label.font = .menuFont(ofSize: 13)
+        brightnessReadout.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        brightnessReadout.textColor = .secondaryLabelColor
+        brightnessReadout.alignment = .right
+        brightnessSlider.isContinuous = true
+        brightnessSlider.controlSize = .small
+        brightnessSlider.target = self
+        brightnessSlider.action = #selector(brightnessChanged(_:))
+
+        let stack = NSStackView(views: [label, brightnessSlider, brightnessReadout])
+        stack.orientation = .horizontal
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 32))
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            brightnessReadout.widthAnchor.constraint(equalToConstant: 40),
+            brightnessSlider.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
+        ])
+        let item = NSMenuItem()
+        item.view = container
+        return item
+    }
+
     private func launchedAsLoginItem() -> Bool {
         guard let event = NSAppleEventManager.shared().currentAppleEvent,
               event.eventID == AEEventID(kAEOpenApplication) else { return false }
         return event.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
+    }
+
+    // MARK: external display
+
+    private func showDisplayControls(_ visible: Bool) {
+        brightnessItem.isHidden = !visible
+        displayPowerItem.isHidden = !visible
+    }
+
+    private func ask(_ request: [String: Any]) {
+        requestCounter += 1
+        var payload = request
+        payload["id"] = requestCounter
+        agent.send(payload)
+    }
+
+    private func askScreens() {
+        guard agent.isRunning else { return }
+        ask(["cmd": "screens"])
+    }
+
+    // The agent answers with the same screen list the phone sees.
+    private func applyScreens(_ screens: [[String: Any]]) {
+        let screen = screens.first { ($0["kind"] as? String) == "ddc" }
+        screenId = screen?["id"] as? String
+        screenName = screen?["name"] as? String ?? ""
+        showDisplayControls(screenId != nil)
+        // While the slider is being dragged, its own value is the newer one.
+        guard let brightness = screen?["brightness"] as? Int,
+              Date().timeIntervalSince(lastBrightnessSend) > 2, pendingBrightness == nil else { return }
+        brightnessSlider.doubleValue = Double(brightness)
+        brightnessReadout.stringValue = "\(brightness)%"
+    }
+
+    @objc private func brightnessChanged(_ sender: NSSlider) {
+        let value = Int(sender.doubleValue.rounded())
+        brightnessReadout.stringValue = "\(value)%"
+        pendingBrightness = value
+        let since = Date().timeIntervalSince(lastBrightnessSend)
+        // DDC writes are queued 400 ms apart in the agent; sending faster than that only piles up.
+        if since >= 0.2 {
+            flushBrightness()
+        } else if brightnessTimer == nil {
+            brightnessTimer = Timer.scheduledTimer(withTimeInterval: 0.2 - since, repeats: false) { [weak self] _ in
+                self?.flushBrightness()
+            }
+        }
+    }
+
+    private func flushBrightness() {
+        brightnessTimer?.invalidate()
+        brightnessTimer = nil
+        guard let screenId, let value = pendingBrightness else { return }
+        pendingBrightness = nil
+        lastBrightnessSend = Date()
+        ask(["action": "display.brightness.set", "params": ["display": screenId, "value": value]])
+    }
+
+    // DDC standby: the Mac keeps sending a picture, so the display stays dark until it is woken
+    // here again. Nothing reports that state back, so the item remembers what it last sent.
+    @objc private func toggleDisplayPower() {
+        ask(["action": "display.awake.set", "params": ["on": displayAsleep]])
+        displayAsleep.toggle()
+        displayPowerItem.title = displayAsleep ? "唤醒显示器" : "关闭显示器"
     }
 
     // MARK: agent lifecycle
@@ -323,6 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     private func agentExited() {
+        showDisplayControls(false)
         guard !paused else {
             link = "paused"
             render()
@@ -343,10 +468,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     private func handle(_ event: [String: Any]) {
-        guard event["event"] as? String == "status", let status = event["status"] as? String else { return }
-        link = status
-        if status == "connected" { restartDelay = 1 }
-        render()
+        switch event["event"] as? String {
+        case "status":
+            guard let status = event["status"] as? String else { return }
+            link = status
+            if status == "connected" {
+                restartDelay = 1
+                askScreens()
+            }
+            render()
+        case "reply":
+            if let screens = event["screens"] as? [[String: Any]] { applyScreens(screens) }
+        default:
+            break
+        }
     }
 
     private var relayHost: String? {

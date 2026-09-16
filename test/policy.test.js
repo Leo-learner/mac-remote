@@ -24,6 +24,7 @@ test('harmless actions run without confirmation', () => {
     ['apps.open', { bundleId: 'com.apple.TextEdit' }],
     ['apps.quit', { pid: 200 }],
     ['display.dark.set', { on: true }],
+    ['display.awake.set', { on: false }],
   ];
   for (const [action, params] of cases) assert.ok(runsUnattended(assessRisk(action, params, ctx)), action);
 });

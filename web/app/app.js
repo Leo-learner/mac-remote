@@ -27,6 +27,8 @@ const ERRORS = {
   'clash-pac-mode': 'Clash Verge 用的是 PAC 模式，暂不支持远程切换',
   'no-network-service': '找不到 Mac 当前使用的网络',
   'no-such-display': '找不到这个显示器',
+  'no-ddc-display': '没有找到能用 DDC 控制的外接显示器',
+  'ddc-write-failed': '显示器没有接受这条指令',
   'accessibility-not-granted': '需要先在 Mac 上授予「辅助功能」权限',
   'nightshift-unavailable': '这台 Mac 上夜览不可用',
   'slow-down': '操作太频繁了，稍等一下',
@@ -358,6 +360,31 @@ $('#output-button').addEventListener('click', async () => {
   });
   if (pick && !pick.current) {
     act('sound.output.set', { id: pick.id }).then((result) => result && toast(`已切换到「${pick.name}」`)).catch(() => {});
+  }
+});
+
+// The monitor's own standby over DDC. Nothing reports that state back, so the button remembers
+// what it last sent: after sending the monitor to standby, the same button wakes it again.
+let displayAsleep = false;
+
+function renderDisplayPower() {
+  $('#display-off-name').textContent = displayAsleep ? '唤醒显示器' : '关闭显示器';
+  $('#brightness-note').textContent = displayAsleep ? '显示器已待机。动鼠标不会点亮它；在 Mac 上敲一下键盘或点一下鼠标就会亮，也可以点上面的按钮。' : '';
+}
+
+$('#display-off')?.addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    if (await act('display.awake.set', { on: displayAsleep })) {
+      displayAsleep = !displayAsleep;
+      toast(displayAsleep ? '显示器已进入待机' : '已唤醒显示器');
+      renderDisplayPower();
+    }
+  } catch {
+    // act() already explained the failure
+  } finally {
+    button.disabled = false;
   }
 });
 

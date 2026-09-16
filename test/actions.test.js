@@ -7,6 +7,7 @@ test('accepts well-formed params', () => {
   assert.deepEqual(validateParams('apps.open', { bundleId: 'com.apple.Safari' }).ok, true);
   assert.deepEqual(validateParams('wifi.set', { on: false }), { ok: true, params: { on: false } });
   assert.deepEqual(validateParams('proxy.set', { on: false }), { ok: true, params: { on: false } });
+  assert.deepEqual(validateParams('display.awake.set', { on: false }), { ok: true, params: { on: false } });
   assert.deepEqual(validateParams('state.get'), { ok: true, params: {} });
 });
 

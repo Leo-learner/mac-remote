@@ -154,6 +154,32 @@ export async function setBrightness({ display, value }) {
   return { display, value };
 }
 
+// The monitor's own standby, over DDC: macOS keeps sending a picture, so the screen stays dark
+// even when the mouse moves — which is the point of using DDC instead of display sleep. A key
+// press, a click or a scroll at the Mac does bring it back: a macctl process watches for that and
+// ends on the first deliberate input, on its timeout, or with the agent. Standby and the wake ride
+// the same queue as the brightness reads, since they share one bus.
+let wakeWatch = 0;
+
+async function watchForWake() {
+  const generation = ++wakeWatch;
+  const result = await run(BIN.macctl, ['display', 'wait-for-input', '1800'], { timeoutMs: 1_805_000 });
+  if (generation !== wakeWatch || !result.ok) return;
+  try {
+    if (JSON.parse(result.stdout)?.input) await setDisplayAwake({ on: true });
+  } catch {
+    // a half-written reply is not worth acting on
+  }
+}
+
+export async function setDisplayAwake({ on }) {
+  wakeWatch += 1; // whatever was waiting for input is stale now
+  const result = await ddcTask(() => macctl(['display', 'awake', on ? 'on' : 'off']));
+  if (!result.ok) throw new ActionError('ddc-write-failed');
+  if (!on) watchForWake();
+  return { on };
+}
+
 // Light mode has no AppleInterfaceStyle key, so `defaults read` fails; that reads as false.
 export async function getDark() {
   const result = await run(BIN.defaults, ['read', '-g', 'AppleInterfaceStyle']);

@@ -70,6 +70,9 @@ function read(name) {
   return inflight.get(name);
 }
 
+// The launcher's brightness slider reads the same cached value the phone's snapshot uses.
+export const cachedDdcScreens = () => read('ddc');
+
 export function invalidateFor(action) {
   for (const name of INVALIDATES[action] ?? []) cache.delete(name);
 }

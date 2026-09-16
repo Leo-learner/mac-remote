@@ -3,7 +3,7 @@
 import { loadConfig } from './config.js';
 import { dispatch, READ_ONLY } from './registry.js';
 import { startRelayClient } from './relay-client.js';
-import { snapshot } from './state.js';
+import { cachedDdcScreens, snapshot } from './state.js';
 
 const VERSION = '0.1.0';
 const VIEWER_TICK_MS = 3000;
@@ -82,11 +82,44 @@ process.on('SIGTERM', stopAgent);
 process.on('SIGINT', stopAgent);
 process.stdout.on('error', stopAgent); // EPIPE: nobody reads the reports any more
 
+// The launcher's own controls (the menu bar brightness slider) come in on this pipe as
+// {id, action, params} lines and are answered on stdout. They go through the same allow-list and
+// policy as the phone: the channel says who asked, never what may run.
+async function runLocal(line) {
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch {
+    return;
+  }
+  const { id, cmd, action, params } = request ?? {};
+  try {
+    if (cmd === 'screens') return report('reply', { id, ok: true, screens: (await cachedDdcScreens()) ?? [] });
+    const result = await dispatch(action, params ?? {}, { via: 'menu' });
+    report('reply', { id, ok: true, result });
+  } catch (error) {
+    report('reply', { id, ok: false, error: error.code || 'internal', message: error.message });
+  }
+}
+
 // Under MacRemote, stdin is a pipe the launcher holds open. EOF means the launcher is gone,
 // even if it was killed outright, so the agent must not linger as an orphan.
 if (process.env.MAC_REMOTE_PARENT_PIPE === '1') {
   process.stdin.on('end', stopAgent);
   process.stdin.on('error', stopAgent);
+  process.stdin.setEncoding('utf8');
+  let buffer = '';
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk;
+    let newline = buffer.indexOf('\n');
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) runLocal(line);
+      newline = buffer.indexOf('\n');
+    }
+    if (buffer.length > 4096) buffer = ''; // no command from the launcher is anywhere near this long
+  });
   process.stdin.resume();
 }
 

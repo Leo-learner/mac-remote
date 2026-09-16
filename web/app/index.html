@@ -90,8 +90,15 @@
     </button>
 
     <div class="tile fader-tile" id="brightness-tile" hidden>
-      <div class="fader-head"><span class="tile-title">亮度</span><span class="readout" id="brightness-name"></span></div>
+      <div class="fader-head">
+        <span class="tile-title">亮度</span>
+        <button class="chip chip-button" id="display-off" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M9 20h6M12 16.5V20" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+          <span id="display-off-name">关闭显示器</span>
+        </button>
+      </div>
       <div class="fader-stack" id="brightness-faders"></div>
+      <p class="tile-note" id="brightness-note"></p>
     </div>
 
     <div class="tile fader-tile" id="volume-tile">

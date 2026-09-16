@@ -22,6 +22,7 @@ const HANDLERS = {
   'bluetooth.set': network.setBluetooth,
   'proxy.set': network.setSystemProxy,
   'display.brightness.set': display.setBrightness,
+  'display.awake.set': display.setDisplayAwake,
   'display.dark.set': display.setDark,
   'display.nightShift.set': display.setNightShift,
   'display.stageManager.set': display.setStageManager,

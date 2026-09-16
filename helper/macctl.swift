@@ -293,6 +293,74 @@ func displays() -> [[String: Any]] {
     }
 }
 
+// MARK: - DDC over I2C (private IOAVService, the path m1ddc uses)
+
+// On Apple Silicon an external display's DDC/CI channel hangs off IOAVService, which is private:
+// the symbols are looked up at runtime, and a missing one simply means "no DDC here". The packet
+// layout and the 0x6E checksum seed come from the DDC/CI spec (as implemented by m1ddc, MIT).
+let ddcChipAddress: UInt32 = 0x37
+let ddcDataAddress: UInt32 = 0x51
+let vcpDisplayPower: UInt8 = 0xD6
+
+typealias AVServiceCreate = @convention(c) (CFAllocator?) -> Unmanaged<CFTypeRef>?
+typealias AVWriteI2C = @convention(c) (CFTypeRef, UInt32, UInt32, UnsafeMutableRawPointer, UInt32) -> Int32
+
+func ioKitSymbol(_ name: String) -> UnsafeMutableRawPointer? {
+    guard let handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY) else { return nil }
+    return dlsym(handle, name)
+}
+
+// The default external display. This Mac runs in clamshell with one monitor, which is the one
+// DDC talks to; several externals would need the IORegistry walk that m1ddc does.
+func externalAVService() -> CFTypeRef? {
+    guard let symbol = ioKitSymbol("IOAVServiceCreate") else { return nil }
+    return unsafeBitCast(symbol, to: AVServiceCreate.self)(kCFAllocatorDefault)?.takeRetainedValue()
+}
+
+// One "set VCP feature" message: length, opcode, feature, value (big endian), checksum.
+func ddcWrite(_ service: CFTypeRef, feature: UInt8, value: UInt16) -> Bool {
+    guard let symbol = ioKitSymbol("IOAVServiceWriteI2C") else { return false }
+    let write = unsafeBitCast(symbol, to: AVWriteI2C.self)
+    var packet: [UInt8] = [0x84, 0x03, feature, UInt8(value >> 8), UInt8(value & 0xFF), 0]
+    packet[5] = packet.prefix(5).reduce(0x6E ^ UInt8(ddcDataAddress)) { $0 ^ $1 }
+    // Displays miss single messages often enough that m1ddc sends each one twice, spaced out.
+    var ok = false
+    for _ in 0..<2 {
+        usleep(20_000)
+        let sent = packet.withUnsafeMutableBufferPointer { buffer in
+            write(service, ddcChipAddress, ddcDataAddress, buffer.baseAddress!, UInt32(buffer.count)) == 0
+        }
+        ok = ok || sent
+    }
+    return ok
+}
+
+// VCP D6 "display power mode": 1 = on, 4 = off (standby). Value 5, the hard off, is deliberately
+// not used: some displays then only come back from their own power button, and this Mac is in
+// clamshell — a display that stays dark leaves no screen at all.
+func setDisplayAwake(_ awake: Bool) -> Bool {
+    guard let service = externalAVService() else { fail("no-ddc-display") }
+    return ddcWrite(service, feature: vcpDisplayPower, value: awake ? 0x01 : 0x04)
+}
+
+// Waits until the person at the Mac presses a key, clicks or scrolls. Moving the mouse is
+// deliberately ignored: a twitchy wireless mouse lighting the display back up is exactly what
+// standby is meant to stop. Ends early if the agent that started it is gone.
+func waitForDeliberateInput(timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    var sawQuiet = false
+    while Date() < deadline, getppid() != 1 {
+        let idle = [CGEventType.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]
+            .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }
+            .min() ?? .greatestFiniteMagnitude
+        // The click that asked for standby counts as input too, so wait for a quiet moment first.
+        if idle > 2 { sawQuiet = true }
+        if sawQuiet, idle < 1 { return true }
+        usleep(250_000)
+    }
+    return false
+}
+
 // MARK: - Dispatch
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -354,6 +422,11 @@ case ("display", "set-brightness"):
     }
     guard CGDisplayIsBuiltin(id) != 0 else { fail("not-builtin-display") }
     emit(["ok": setBuiltinBrightness(id, Float(value) / 100)])
+case ("display", "awake"):
+    guard arg(2) == "on" || arg(2) == "off" else { fail("usage: display awake on|off") }
+    emit(["ok": setDisplayAwake(arg(2) == "on")])
+case ("display", "wait-for-input"):
+    emit(["ok": true, "input": waitForDeliberateInput(timeout: Double(arg(2)) ?? 1800)])
 
 case ("ax-trusted", let flag):
     let options = ["AXTrustedCheckOptionPrompt": flag == "--prompt"] as CFDictionary
@@ -362,5 +435,5 @@ case ("ax-trusted", let flag):
 default:
     fail("usage: macctl state | apps running|installed|icon <path> [size]|hide|quit|force-quit <pid>"
         + " | audio outputs|set-output <uid> | media play|next|prev | nightshift get|set on|off"
-        + " | display list|set-brightness <id> <0-100> | ax-trusted [--prompt]")
+        + " | display list|set-brightness <id> <0-100>|awake on|off|wait-for-input <seconds> | ax-trusted [--prompt]")
 }
