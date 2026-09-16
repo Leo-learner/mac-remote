@@ -3,6 +3,7 @@
 import { loadConfig } from './config.js';
 import { dispatch, READ_ONLY } from './registry.js';
 import { startRelayClient } from './relay-client.js';
+import { resumeStandbyWatch } from './controls/display.js';
 import { cachedDdcScreens, snapshot } from './state.js';
 
 const VERSION = '0.1.0';
@@ -124,3 +125,4 @@ if (process.env.MAC_REMOTE_PARENT_PIPE === '1') {
 }
 
 report('started', { version: VERSION, relay: new URL(config.relayUrl).host });
+resumeStandbyWatch();

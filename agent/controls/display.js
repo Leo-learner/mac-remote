@@ -1,5 +1,8 @@
 // Brightness (m1ddc for external monitors, DisplayServices via macctl for the built-in panel),
 // dark mode, Night Shift and Stage Manager.
+import { access, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { CONFIG_FILE } from '../config.js';
 import { ActionError, BIN, macctl, osascript, run, runOrThrow } from '../exec.js';
 
 // DDC/CI over USB-C/DisplayPort is fragile. Measured on the VG2481-4K (m1ddc 1.2.0): back-to-back
@@ -32,7 +35,11 @@ export async function ddcDisplays() {
   if (!result.ok) return displayList.list ?? [];
   const list = result.stdout.split('\n').flatMap((line) => {
     const match = line.match(/^\[(\d+)\]\s+(.+?)\s+\(([0-9A-Fa-f-]+)\)\s*$/);
-    return match ? [{ index: Number(match[1]), name: match[2], uuid: match[3] }] : [];
+    if (!match) return [];
+    // Right after the monitor wakes, macOS can briefly report no product name; m1ddc prints "(null)".
+    const index = Number(match[1]);
+    const known = displayList.list?.find((item) => item.index === index)?.name;
+    return [{ index, name: match[2] === '(null)' ? known ?? '外接显示器' : match[2], uuid: match[3] }];
   });
   displayList = { at: Date.now(), list };
   return list;
@@ -156,19 +163,40 @@ export async function setBrightness({ display, value }) {
 
 // The monitor's own standby, over DDC: macOS keeps sending a picture, so the screen stays dark
 // even when the mouse moves — which is the point of using DDC instead of display sleep. A key
-// press, a click or a scroll at the Mac does bring it back: a macctl process watches for that and
-// ends on the first deliberate input, on its timeout, or with the agent. Standby and the wake ride
-// the same queue as the brightness reads, since they share one bus.
+// press, a click or a scroll at the Mac does bring it back. Standby and the wake ride the same
+// queue as the brightness reads, since they share one bus.
+//
+// The watch has to outlast the person being away. Each macctl run gives up after WAKE_WATCH_SEC,
+// so it is started again for as long as the monitor stays in standby, and a marker file next to
+// the agent's config lets an agent that restarts in the meantime pick the watch back up.
+const WAKE_WATCH_SEC = Number(process.env.MAC_REMOTE_WAKE_WATCH_SEC) || 1800;
+const STANDBY_MARKER = join(dirname(CONFIG_FILE), 'display-standby');
 let wakeWatch = 0;
 
 async function watchForWake() {
   const generation = ++wakeWatch;
-  const result = await run(BIN.macctl, ['display', 'wait-for-input', '1800'], { timeoutMs: 1_805_000 });
-  if (generation !== wakeWatch || !result.ok) return;
-  try {
-    if (JSON.parse(result.stdout)?.input) await setDisplayAwake({ on: true });
-  } catch {
-    // a half-written reply is not worth acting on
+  while (generation === wakeWatch) {
+    const result = await run(BIN.macctl, ['display', 'wait-for-input', String(WAKE_WATCH_SEC)], {
+      timeoutMs: WAKE_WATCH_SEC * 1000 + 5000,
+    });
+    if (generation !== wakeWatch) return;
+    let input = false;
+    try {
+      input = JSON.parse(result.stdout)?.input === true;
+    } catch {
+      // a half-written reply counts as no input
+    }
+    if (input) {
+      try {
+        await setDisplayAwake({ on: true });
+        process.stdout.write(`${JSON.stringify({ event: 'display', awake: true, via: 'input', ts: Date.now() })}\n`);
+      } catch {
+        await pause(2000);
+        watchForWake(); // the wake did not go through: keep listening for the next key press
+      }
+      return;
+    }
+    if (!result.ok) await pause(5000); // a failing helper must not spin
   }
 }
 
@@ -176,8 +204,18 @@ export async function setDisplayAwake({ on }) {
   wakeWatch += 1; // whatever was waiting for input is stale now
   const result = await ddcTask(() => macctl(['display', 'awake', on ? 'on' : 'off']));
   if (!result.ok) throw new ActionError('ddc-write-failed');
-  if (!on) watchForWake();
+  if (on) {
+    await unlink(STANDBY_MARKER).catch(() => {});
+  } else {
+    await writeFile(STANDBY_MARKER, `${new Date().toISOString()}\n`).catch(() => {});
+    watchForWake();
+  }
   return { on };
+}
+
+// Called once when the agent starts: a monitor an earlier agent left in standby is watched again.
+export async function resumeStandbyWatch() {
+  if (await access(STANDBY_MARKER).then(() => true, () => false)) watchForWake();
 }
 
 // Light mode has no AppleInterfaceStyle key, so `defaults read` fails; that reads as false.
