@@ -169,14 +169,38 @@ export async function setBrightness({ display, value }) {
 // The watch has to outlast the person being away. Each macctl run gives up after WAKE_WATCH_SEC,
 // so it is started again for as long as the monitor stays in standby, and a marker file next to
 // the agent's config lets an agent that restarts in the meantime pick the watch back up.
+//
+// Under MacRemote (MAC_REMOTE_PARENT_PIPE=1) the menu bar app watches instead: it is connected to
+// the window server anyway, so no second AppKit process has to poll for the hours the monitor is
+// dark. It is sent {event:"watch-input", on} and answers {cmd:"input"} on the first deliberate
+// input. The cli and a dev agent have no launcher to ask, so they keep the macctl loop.
 const WAKE_WATCH_SEC = Number(process.env.MAC_REMOTE_WAKE_WATCH_SEC) || 1800;
 const STANDBY_MARKER = join(dirname(CONFIG_FILE), 'display-standby');
 let wakeWatch = 0;
+let standby = false; // the last awake write that went through was "off" (or an earlier agent's was)
+let launcherWatching = false; // the launcher was asked to watch and has not reported input since
+
+// Read on every call rather than once, so the tests can take both paths in one process.
+const launcherWatches = () => process.env.MAC_REMOTE_PARENT_PIPE === '1';
+
+// The standby writes, the macctl watch and the reports to the launcher go through here, so the
+// tests can swap in fakes: no monitor, no macctl binary, no launcher reading stdout.
+export const standbyIo = {
+  macctl,
+  run,
+  report: (event, details) => process.stdout.write(`${JSON.stringify({ event, ...details, ts: Date.now() })}\n`),
+};
+
+function askLauncherToWatch(on) {
+  launcherWatching = on;
+  standbyIo.report('watch-input', { on });
+}
 
 async function watchForWake() {
+  if (launcherWatches()) return askLauncherToWatch(true);
   const generation = ++wakeWatch;
   while (generation === wakeWatch) {
-    const result = await run(BIN.macctl, ['display', 'wait-for-input', String(WAKE_WATCH_SEC)], {
+    const result = await standbyIo.run(BIN.macctl, ['display', 'wait-for-input', String(WAKE_WATCH_SEC)], {
       timeoutMs: WAKE_WATCH_SEC * 1000 + 5000,
     });
     if (generation !== wakeWatch) return;
@@ -189,7 +213,7 @@ async function watchForWake() {
     if (input) {
       try {
         await setDisplayAwake({ on: true });
-        process.stdout.write(`${JSON.stringify({ event: 'display', awake: true, via: 'input', ts: Date.now() })}\n`);
+        standbyIo.report('display', { awake: true, via: 'input' });
       } catch {
         await pause(2000);
         watchForWake(); // the wake did not go through: keep listening for the next key press
@@ -202,10 +226,13 @@ async function watchForWake() {
 
 export async function setDisplayAwake({ on }) {
   wakeWatch += 1; // whatever was waiting for input is stale now
-  const result = await ddcTask(() => macctl(['display', 'awake', on ? 'on' : 'off']));
+  const result = await ddcTask(() => standbyIo.macctl(['display', 'awake', on ? 'on' : 'off']));
+  // A write that did not go through leaves the monitor, and the launcher's watch, as they were.
   if (!result.ok) throw new ActionError('ddc-write-failed');
+  standby = !on;
   if (on) {
     await unlink(STANDBY_MARKER).catch(() => {});
+    if (launcherWatches()) askLauncherToWatch(false);
   } else {
     await writeFile(STANDBY_MARKER, `${new Date().toISOString()}\n`).catch(() => {});
     watchForWake();
@@ -213,9 +240,28 @@ export async function setDisplayAwake({ on }) {
   return { on };
 }
 
+// {cmd:"input"} from the launcher: someone at the Mac pressed a key, clicked or scrolled. It only
+// counts while the launcher is watching, so all it can ever do is wake a monitor put in standby.
+export async function wakeOnInput() {
+  if (!launcherWatching) return;
+  launcherWatching = false; // the launcher stopped watching when it reported the input
+  try {
+    await setDisplayAwake({ on: true });
+    standbyIo.report('display', { awake: true, via: 'input' });
+  } catch {
+    await pause(2000);
+    // The wake did not go through: listen for the next key press, unless the monitor was woken
+    // some other way or the launcher was asked to watch again in the meantime.
+    if (standby && !launcherWatching) askLauncherToWatch(true);
+  }
+}
+
 // Called once when the agent starts: a monitor an earlier agent left in standby is watched again.
 export async function resumeStandbyWatch() {
-  if (await access(STANDBY_MARKER).then(() => true, () => false)) watchForWake();
+  if (await access(STANDBY_MARKER).then(() => true, () => false)) {
+    standby = true;
+    watchForWake();
+  }
 }
 
 // Light mode has no AppleInterfaceStyle key, so `defaults read` fails; that reads as false.

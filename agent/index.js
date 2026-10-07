@@ -3,7 +3,7 @@
 import { loadConfig } from './config.js';
 import { dispatch, READ_ONLY } from './registry.js';
 import { startRelayClient } from './relay-client.js';
-import { resumeStandbyWatch } from './controls/display.js';
+import { resumeStandbyWatch, wakeOnInput } from './controls/display.js';
 import { cachedDdcScreens, snapshot } from './state.js';
 
 const VERSION = '0.1.0';
@@ -85,7 +85,9 @@ process.stdout.on('error', stopAgent); // EPIPE: nobody reads the reports any mo
 
 // The launcher's own controls (the menu bar brightness slider) come in on this pipe as
 // {id, action, params} lines and are answered on stdout. They go through the same allow-list and
-// policy as the phone: the channel says who asked, never what may run.
+// policy as the phone: the channel says who asked, never what may run. {cmd:"input"} is the
+// launcher's answer to a watch-input event; it gets no reply and can only wake a monitor that is
+// being watched (controls/display.js).
 async function runLocal(line) {
   let request;
   try {
@@ -96,6 +98,7 @@ async function runLocal(line) {
   const { id, cmd, action, params } = request ?? {};
   try {
     if (cmd === 'screens') return report('reply', { id, ok: true, screens: (await cachedDdcScreens()) ?? [] });
+    if (cmd === 'input') return await wakeOnInput();
     const result = await dispatch(action, params ?? {}, { via: 'menu' });
     report('reply', { id, ok: true, result });
   } catch (error) {
