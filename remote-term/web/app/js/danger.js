@@ -9,7 +9,8 @@ const RULES = [
   [/\bosascript\b.*\b(shut down|restart|sleep)\b/i, '这条命令会关机、重启或让电脑睡眠'],
   [/\b(killall|pkill)\b.*clash/i, '这条命令会退出 Clash Verge'],
   [/\bquit\b.*\bclash/i, '这条命令会退出 Clash Verge'],
-  [/\b(killall|pkill)\b.*\b(RemoteTerm|node)\b/i, '这条命令可能结束远程终端自己，手机会断开'],
+  // MacRemote too: the remote terminal runs inside it, so ending MacRemote ends the terminal.
+  [/\b(killall|pkill)\b.*\b(RemoteTerm|MacRemote|node)\b/i, '这条命令可能结束远程终端自己，手机会断开'],
   [/\blaunchctl\b.*\b(bootout|unload)\b/i, '这条命令会停止系统服务，远程终端可能断开'],
   [/\brm\s+(-\w+\s+)*-\w*[rR]\w*\s+(-\w+\s+)*(~|\$HOME|\/)\/?\s*$/, '这条命令会删除整个主目录或根目录'],
 ];
