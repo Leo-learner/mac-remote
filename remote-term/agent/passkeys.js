@@ -2,7 +2,6 @@
 // but only a check made here can open a shell: the relay is a shared box this Mac does not trust.
 import { randomBytes } from 'node:crypto';
 import { userInfo } from 'node:os';
-import { verifyAuthenticationResponse, verifyRegistrationResponse } from '@simplewebauthn/server';
 import { fromB64u, toB64u } from '../shared/bytes.js';
 import { SIZES, ephemeralKey, loginChallenge, pairChallenge, pairingId, sealBox, verifyPairProof } from '../shared/channel.js';
 import { JsonFile } from './store.js';
@@ -11,6 +10,11 @@ const PAIRING_TTL_MS = 10 * 60_000;
 const HANDSHAKE_TTL_MS = 3 * 60_000;
 const MAX_PENDING = 16;
 const MAX_BAD_PROOFS = 3;
+
+// SimpleWebAuthn (and the ASN.1 stack under it) is only needed to check a passkey, which happens
+// when a phone pairs or logs in: it loads then, not with the agent.
+let webauthn = null;
+const loadWebauthn = () => (webauthn ??= import('@simplewebauthn/server'));
 
 export class AuthError extends Error {
   constructor(code, message = code) {
@@ -160,6 +164,7 @@ export class PasskeyAuthority {
       throw new AuthError('bad-proof');
     }
 
+    const { verifyRegistrationResponse } = await loadWebauthn();
     let verification;
     try {
       verification = await verifyRegistrationResponse({
@@ -226,6 +231,7 @@ export class PasskeyAuthority {
 
     const stored = this.credentials.find((item) => item.id === response?.id);
     if (!stored) throw new AuthError('unknown-credential');
+    const { verifyAuthenticationResponse } = await loadWebauthn();
     let verification;
     try {
       verification = await verifyAuthenticationResponse({

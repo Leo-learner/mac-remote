@@ -177,6 +177,30 @@ test('logging in with the passkey mints a fresh ticket from the Mac', async () =
   connection.close();
 });
 
+test('the launcher hears about sessions only when their number changes; phones hear every change', async () => {
+  const connection = phone.connect(ticket);
+  await connection.opened;
+  await connection.ready();
+  const mark = agentEvents.length;
+  await connection.send({ t: 'create', ref: 'c2', cols: 60, rows: 20 });
+  const created = await connection.reply((message) => message.t === 'created' && message.ref === 'c2', 'created');
+  await connection.send({ t: 'attach', ref: 'a2', ch: 2, id: created.id, cols: 60, rows: 20 });
+  await connection.reply((message) => message.t === 'screen' && message.ch === 2, 'screen');
+  // Output, the command starting and ending: each changes the list the phones see.
+  await connection.input(2, 'for i in 1 2 3; do echo tick-$i; sleep 0.6; done\r');
+  const lists = () => connection.controls.filter((message) => message.t === 'sessions' && message.items.length === 2);
+  await waitFor(() => lists().some((message) => message.items.some((item) => item.lastCommand?.text.startsWith('for i'))), { what: 'the loop to finish' });
+  assert.ok(lists().length >= 3, `the phone heard each change (${lists().length})`);
+  await connection.send({ t: 'close', ref: 'x2', id: created.id });
+  await connection.reply((message) => message.t === 'closed' && message.ref === 'x2', 'closed');
+  await waitFor(() => agentEvents.slice(mark).some((event) => event.event === 'sessions' && event.count === 1), { what: 'the count back at one' });
+  const counts = agentEvents.slice(mark).filter((event) => event.event === 'sessions').map((event) => event.count);
+  assert.deepEqual(counts, [2, 1]);
+  const lifetime = agentEvents.filter((event) => event.event === 'sessions').map((event) => event.count);
+  assert.ok(lifetime.every((count, i) => count !== (i === 0 ? 0 : lifetime[i - 1])), `never the same count twice in a row: ${lifetime}`);
+  connection.close();
+});
+
 test('the relay refuses logins from unknown passkeys and sockets from other origins', async () => {
   const intruder = new FakePhone({ base: `http://127.0.0.1:${port}`, origin });
   await assert.rejects(intruder.login(new SoftPasskey({ rpId: 'localhost', origin })), (error) => error.reply?.status === 401);

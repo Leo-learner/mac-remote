@@ -114,8 +114,8 @@ export class Link {
     this.handlerTable ??= {
       ping: ({ ts }) => this.control({ t: 'pong', ts, at: Date.now() }),
       list: () => this.control({ t: 'sessions', items: this.sessions.list() }),
-      create: (message) => {
-        const session = this.sessions.create({ cols: message.cols, rows: message.rows, cwd: message.cwd });
+      create: async (message) => {
+        const session = await this.sessions.create({ cols: message.cols, rows: message.rows, cwd: message.cwd });
         this.control({ t: 'created', ref: message.ref, id: session.id });
       },
       attach: (message) => this.attach(message),

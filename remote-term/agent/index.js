@@ -2,6 +2,7 @@
 // the relay. stdout carries one JSON object per line for the menu bar launcher.
 //   node agent/index.js            run
 //   node agent/index.js --pair     run and print a pairing QR code (before the launcher exists)
+import { accessSync, constants } from 'node:fs';
 import { hostname, userInfo } from 'node:os';
 import { parseArgs } from 'node:util';
 import { loadConfig, paths } from './config.js';
@@ -14,6 +15,7 @@ import { TicketStore } from './tickets.js';
 
 const VERSION = '0.1.0';
 const RPC_METHODS = ['pair-start', 'pair-finish', 'login-start', 'login-finish'];
+const TCC_DB = '/Library/Application Support/com.apple.TCC/TCC.db';
 
 const { values: flags } = parseArgs({ options: { pair: { type: 'boolean', default: false } } });
 const report = (event, details = {}) => process.stdout.write(`${JSON.stringify({ event, ...details, ts: Date.now() })}\n`);
@@ -43,10 +45,27 @@ const sessions = new SessionManager({ integrationDir: /^[\x20-\x7e]+$/.test(path
 
 const info = () => ({ version: VERSION, host: hostname().replace(/\.local$/, ''), user: userInfo().username });
 
+// TCC.db is readable only with Full Disk Access. Asked here rather than in the menu bar app, which
+// has a permission identity of its own: this process runs as the RemoteTerm helper, and its grant
+// is the one the shells get.
+function hasFullDiskAccess() {
+  try {
+    accessSync(TCC_DB, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---- sessions → phones and notifications ----------------------------------------------------
 
+// The list changes with every burst of output; the launcher shows only how many sessions there
+// are, and counts from zero for every agent it starts.
+let reportedSessions = 0;
 sessions.on('list', (items) => {
   for (const link of links.values()) if (link.state === 'open') link.control({ t: 'sessions', items });
+  if (items.length === reportedSessions) return;
+  reportedSessions = items.length;
   report('sessions', { count: items.length });
 });
 sessions.on('removed', (session) => {
@@ -162,6 +181,7 @@ if (process.env.REMOTE_TERM_PARENT_PIPE === '1') {
       links: [...links.values()].filter((link) => link.state === 'open').length,
       devices: authority.credentials.length,
       pairing: authority.pairingState(),
+      fullDiskAccess: hasFullDiskAccess(),
     }),
   };
   process.stdin.setEncoding('utf8');

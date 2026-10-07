@@ -30,7 +30,7 @@ async function makeManager(options = {}) {
   await writeFile(join(home, '.zshrc'), "PS1='%# '\nunsetopt PROMPT_SP\n");
   const manager = new SessionManager({
     shell: '/bin/zsh',
-    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, USER: 'tester', LANG: 'en_US.UTF-8', REMOTE_TERM_SECRET: 'x' },
+    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, USER: 'tester', LANG: 'en_US.UTF-8', REMOTE_TERM_SECRET: 'x', MAC_REMOTE_CONFIG: 'y' },
     ...options,
   });
   managers.push(manager);
@@ -62,7 +62,7 @@ test('shell integration reports commands, exit codes and the working directory',
   const { manager } = await makeManager();
   const ends = [];
   manager.on('command-end', (session, details) => ends.push(details));
-  const session = manager.create({ cols: 80, rows: 24 });
+  const session = await manager.create({ cols: 80, rows: 24 });
   await ready(session);
   session.write('cd /usr/bin && (exit 3)\r');
   await waitFor(() => ends.length === 1, { what: 'command end' });
@@ -73,20 +73,20 @@ test('shell integration reports commands, exit codes and the working directory',
   assert.equal(session.command, null);
 });
 
-test('the shell environment is clean: no ZDOTDIR or agent variables leak into it', async () => {
+test('the shell environment is clean: no ZDOTDIR or agent or launcher variables leak into it', async () => {
   const { manager, home } = await makeManager();
-  const session = manager.create();
+  const session = await manager.create();
   await ready(session);
   const record = recorder();
   session.attach(record.sink);
-  session.write('print -r -- "Z=${ZDOTDIR-unset} R=${RT_USER_ZDOTDIR-unset} S=${REMOTE_TERM_SECRET-unset} H=$HISTFILE T=$TERM_PROGRAM C=$COLORTERM"\r');
-  const line = await waitFor(() => /Z=\S+ R=\S+ S=\S+ H=\S+ T=\S+ C=\S+/.exec(record.text.replace(/print -r[^\n]*/, ''))?.[0], { what: 'env line' });
-  assert.equal(line, `Z=unset R=unset S=unset H=${home}/.zsh_history T=remote-term C=truecolor`);
+  session.write('print -r -- "Z=${ZDOTDIR-unset} R=${RT_USER_ZDOTDIR-unset} S=${REMOTE_TERM_SECRET-unset} M=${MAC_REMOTE_CONFIG-unset} H=$HISTFILE T=$TERM_PROGRAM C=$COLORTERM"\r');
+  const line = await waitFor(() => /Z=\S+ R=\S+ S=\S+ M=\S+ H=\S+ T=\S+ C=\S+/.exec(record.text.replace(/print -r[^\n]*/, ''))?.[0], { what: 'env line' });
+  assert.equal(line, `Z=unset R=unset S=unset M=unset H=${home}/.zsh_history T=remote-term C=truecolor`);
 });
 
 test('attaching sends the current screen first, then live output, in order', async () => {
   const { manager } = await makeManager();
-  const session = manager.create({ cols: 60, rows: 20 });
+  const session = await manager.create({ cols: 60, rows: 20 });
   await ready(session);
   let ends = 0;
   manager.on('command-end', () => { ends += 1; });
@@ -108,7 +108,7 @@ test('attaching sends the current screen first, then live output, in order', asy
 
 test('a phone rebuilding the screen from snapshot + live output matches the Mac, even mid-stream', async () => {
   const { manager } = await makeManager();
-  const session = manager.create({ cols: 50, rows: 12 });
+  const session = await manager.create({ cols: 50, rows: 12 });
   await ready(session);
   let ends = 0;
   manager.on('command-end', () => { ends += 1; });
@@ -137,7 +137,7 @@ test('a phone rebuilding the screen from snapshot + live output matches the Mac,
 
 test('a phone that stops acknowledging stalls, then gets a fresh snapshot instead of the backlog', async () => {
   const { manager } = await makeManager();
-  const session = manager.create();
+  const session = await manager.create();
   await ready(session);
   const record = recorder();
   const subscription = session.attach(record.sink);
@@ -160,7 +160,7 @@ test('resize reaches the program; exit is reported with its code; input after ex
   const { manager } = await makeManager();
   const exits = [];
   manager.on('exit', (session, details) => exits.push(details));
-  const session = manager.create({ cols: 80, rows: 24 });
+  const session = await manager.create({ cols: 80, rows: 24 });
   await ready(session);
   const record = recorder();
   session.attach(record.sink);
@@ -177,7 +177,7 @@ test('resize reaches the program; exit is reported with its code; input after ex
 
 test('removing a running session hangs up its processes', async () => {
   const { manager } = await makeManager();
-  const session = manager.create();
+  const session = await manager.create();
   await ready(session);
   const { pid } = session;
   session.write('sleep 30\r');
@@ -196,7 +196,7 @@ test('removing a running session hangs up its processes', async () => {
 
 test('bells and OSC 9 / 777 notifications are reported; ConEmu progress is not', async () => {
   const { manager } = await makeManager();
-  const session = manager.create();
+  const session = await manager.create();
   await ready(session);
   const bells = [];
   const notes = [];
@@ -209,7 +209,7 @@ test('bells and OSC 9 / 777 notifications are reported; ConEmu progress is not',
 
 test('the preview is the last output line above an idle prompt', async () => {
   const { manager } = await makeManager();
-  const session = manager.create();
+  const session = await manager.create();
   await ready(session);
   let ends = 0;
   manager.on('command-end', () => { ends += 1; });
@@ -220,10 +220,43 @@ test('the preview is the last output line above an idle prompt', async () => {
 
 test('session limits and bad working directories', async () => {
   const { manager, home } = await makeManager({ maxSessions: 2 });
-  const first = manager.create({ cwd: '/definitely/not/here' });
+  const first = await manager.create({ cwd: '/definitely/not/here' });
   assert.equal(first.cwd, home);
-  const second = manager.create({ cwd: '/usr' });
+  const second = await manager.create({ cwd: '/usr' });
   assert.equal(second.cwd, '/usr');
-  assert.throws(() => manager.create(), (error) => error instanceof SessionError && error.code === 'too-many-sessions');
+  await assert.rejects(manager.create(), (error) => error instanceof SessionError && error.code === 'too-many-sessions');
   assert.equal(manager.list().length, 2);
+});
+
+test('creates that arrive together still stop at the limit', async () => {
+  const { manager } = await makeManager({ maxSessions: 2 });
+  const results = await Promise.allSettled([manager.create(), manager.create(), manager.create()]);
+  assert.deepEqual(results.map((result) => result.status), ['fulfilled', 'fulfilled', 'rejected']);
+  assert.equal(results[2].reason.code, 'too-many-sessions');
+  assert.equal(manager.list().length, 2);
+});
+
+// Why LIMITS.scrollback stays above the 2000 lines the phone asks for (web/app/js/main.js): the
+// device that attaches sets the width first (link.js), and rows kept at a narrower width rewrap
+// into fewer rows. A 2000-row buffer would show a wider device only what 2000 narrow rows held.
+test('a wider device that attaches gets more history than a narrow one, not the same rows rewrapped', async () => {
+  const { manager } = await makeManager();
+  const session = await manager.create({ cols: 50, rows: 12 });
+  await ready(session);
+  let ends = 0;
+  manager.on('command-end', () => { ends += 1; });
+  session.write(`for i in {1..3000}; do print "L$i ${'x'.repeat(80)}"; done\r`); // two rows each at 50 columns, one at 100
+  await waitFor(() => ends === 1, { what: 'output', timeout: 20000 });
+  const snapshotLines = async () => {
+    const record = recorder();
+    const subscription = session.attach(record.sink, { lines: 2000 });
+    await waitFor(() => record.events.length > 0, { what: 'snapshot' });
+    subscription.close();
+    return new Set([...record.events[0].text.matchAll(/L(\d+) x/g)].map((match) => match[1])).size;
+  };
+  const narrow = await snapshotLines();
+  session.resize(100, 12);
+  const wide = await snapshotLines();
+  assert.ok(narrow >= 900, `a narrow device gets its 2000 rows: ${narrow} lines`);
+  assert.ok(wide > narrow * 1.5, `a device twice as wide gets about twice the lines: ${wide} against ${narrow}`);
 });

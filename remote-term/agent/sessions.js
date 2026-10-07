@@ -8,16 +8,13 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SerializeAddon } from '@xterm/addon-serialize';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
-import headless from '@xterm/headless';
-import pty from 'node-pty';
 
-const { Terminal } = headless;
 const encoder = new TextEncoder();
 
 export const LIMITS = {
   sessions: 12,
+  // More than the 2000 lines the phone asks for: a wider device that attaches rewraps the rows
+  // kept at the old width into fewer, so a shorter buffer would hand it less history.
   scrollback: 5000,
   snapshotLines: 1000,
   cols: [10, 500],
@@ -33,6 +30,24 @@ const INTEGRATION_FILES = ['.zshenv', '.zprofile', '.zshrc', 'remote-term.zsh'];
 const VERSION = '0.1.0';
 
 const isAscii = (path) => /^[\x20-\x7e]+$/.test(path);
+
+// The headless xterm and node-pty are the heaviest things the agent can load, and only sessions
+// use them: they load with the first session, so an agent nobody opens a shell on never pays.
+let terminalModules = null;
+function loadTerminalModules() {
+  terminalModules ??= Promise.all([
+    import('@xterm/headless'),
+    import('@xterm/addon-serialize'),
+    import('@xterm/addon-unicode11'),
+    import('node-pty'),
+  ]).then(([headless, serialize, unicode11, pty]) => ({
+    Terminal: headless.default.Terminal,
+    SerializeAddon: serialize.SerializeAddon,
+    Unicode11Addon: unicode11.Unicode11Addon,
+    spawn: pty.default.spawn,
+  }));
+  return terminalModules;
+}
 
 // zsh mangles a ZDOTDIR that holds some multibyte characters once a startup file reassigns it
 // (the "目" of "01-项目" breaks it), so the startup files are copied to an ASCII-only directory,
@@ -165,7 +180,8 @@ export class Subscription {
 // ---- a session ---------------------------------------------------------------------------
 
 export class Session extends EventEmitter {
-  constructor({ id, shell, args, cwd, env, cols, rows, scrollback, spawn }) {
+  // modules: what loadTerminalModules() resolves to; spawn defaults to node-pty's.
+  constructor({ id, shell, args, cwd, env, cols, rows, scrollback, modules, spawn = modules.spawn }) {
     super();
     this.id = id;
     this.name = '';
@@ -188,10 +204,10 @@ export class Session extends EventEmitter {
     this.activityTimer = null;
     this.disposed = false;
 
-    this.term = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
-    this.term.loadAddon(new Unicode11Addon());
+    this.term = new modules.Terminal({ cols, rows, scrollback, allowProposedApi: true });
+    this.term.loadAddon(new modules.Unicode11Addon());
     this.term.unicode.activeVersion = '11'; // must match the phone, or wide characters wrap differently
-    this.serializer = new SerializeAddon();
+    this.serializer = new modules.SerializeAddon();
     this.term.loadAddon(this.serializer);
     this.watchTerminal();
 
@@ -436,7 +452,7 @@ export class SessionManager extends EventEmitter {
     integrationDir = join(tmpdir(), 'remote-term', 'zsh'),
     maxSessions = LIMITS.sessions,
     scrollback = LIMITS.scrollback,
-    spawn = pty.spawn,
+    spawn, // node-pty's, loaded with the first session, unless one is passed in
     log = () => {},
   } = {}) {
     super();
@@ -451,12 +467,15 @@ export class SessionManager extends EventEmitter {
     this.spawn = spawn;
     this.sessions = new Map();
     this.changeTimer = null;
+    this.disposed = false;
   }
 
   envFor() {
     const env = {};
+    // The launchers' settings stay out of the shells: RemoteTerm's own, and MacRemote's, whose app
+    // now starts this agent.
     for (const [key, value] of Object.entries(this.baseEnv)) {
-      if (/^(REMOTE_TERM_|npm_|RT_)/.test(key) || ['NODE_OPTIONS', 'INIT_CWD', 'ZDOTDIR'].includes(key)) continue;
+      if (/^(REMOTE_TERM_|MAC_REMOTE_|npm_|RT_)/.test(key) || ['NODE_OPTIONS', 'INIT_CWD', 'ZDOTDIR'].includes(key)) continue;
       env[key] = value;
     }
     const user = userInfo().username;
@@ -492,7 +511,11 @@ export class SessionManager extends EventEmitter {
     return env;
   }
 
-  create({ cols = 80, rows = 24, cwd } = {}) {
+  // Waits only for the modules; everything after that runs in one go, so creates that arrive
+  // together cannot both slip under the limit, and none starts a shell once the agent is stopping.
+  async create({ cols = 80, rows = 24, cwd } = {}) {
+    const modules = await loadTerminalModules();
+    if (this.disposed) throw new SessionError('stopping');
     if (this.sessions.size >= this.maxSessions) throw new SessionError('too-many-sessions');
     const requested = typeof cwd === 'string' && isAbsolute(cwd) && isDirectory(cwd) ? cwd : null;
     let id;
@@ -506,6 +529,7 @@ export class SessionManager extends EventEmitter {
       cols: clamp(cols, LIMITS.cols, 80),
       rows: clamp(rows, LIMITS.rows, 24),
       scrollback: this.scrollback,
+      modules,
       spawn: this.spawn,
     });
     this.sessions.set(id, session);
@@ -549,6 +573,7 @@ export class SessionManager extends EventEmitter {
   }
 
   dispose() {
+    this.disposed = true;
     clearTimeout(this.changeTimer);
     for (const session of this.sessions.values()) {
       session.kill();

@@ -1,8 +1,8 @@
 // Push notifications, sent from this Mac straight to the phone's push service (Apple's, for an
 // iPhone home screen app). Web Push encrypts the payload to keys the phone generated, so neither
 // the relay nor Apple can read it. shouldNotify() decides which terminal events deserve a buzz.
+import { generateKeyPairSync } from 'node:crypto';
 import { basename } from 'node:path';
-import webpush from 'web-push';
 import { JsonFile } from './store.js';
 
 // Only real push services: the endpoint comes from the phone, and this Mac should not be made to
@@ -17,6 +17,20 @@ class PushError extends Error {
     super(code);
     this.code = code;
   }
+}
+
+// web-push is only needed to send, which waits for a subscribed phone and something worth a buzz:
+// it loads with the first notification instead of with the agent.
+let webpush = null;
+const loadWebpush = () => (webpush ??= import('web-push').then((module) => module.default));
+
+// The keys web-push's generateVAPIDKeys() makes (the public key as an uncompressed P-256 point,
+// the private key as its 32-byte scalar, both base64url), made here so that a first start, which
+// has none yet, does not load web-push either. JWK coordinates are always full length.
+export function vapidKeys() {
+  const { x, y, d } = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' });
+  const point = Buffer.concat([Buffer.from([4]), Buffer.from(x, 'base64url'), Buffer.from(y, 'base64url')]);
+  return { publicKey: point.toString('base64url'), privateKey: d };
 }
 
 // event.kind: 'command' (a command finished), 'bell', 'program' (OSC 9/777 from a program)
@@ -69,7 +83,8 @@ export function describe(event) {
 }
 
 export class Notifier {
-  constructor({ file, subject, send = webpush.sendNotification, now = Date.now, log = () => {}, isFocused = () => false, proxy }) {
+  // send defaults to web-push's sendNotification, loaded on first use.
+  constructor({ file, subject, send = null, now = Date.now, log = () => {}, isFocused = () => false, proxy }) {
     this.store = new JsonFile(file, { vapid: null, subscriptions: [], prefs: {} });
     this.subject = /^https:\/\//.test(subject ?? '') && !/^https:\/\/localhost\b/.test(subject) ? subject : 'mailto:owner@remote-term.invalid';
     this.send = send;
@@ -83,7 +98,7 @@ export class Notifier {
   async load() {
     const value = await this.store.load();
     if (!value.vapid?.publicKey || !value.vapid?.privateKey) {
-      value.vapid = webpush.generateVAPIDKeys();
+      value.vapid = vapidKeys();
       await this.store.save();
     }
     if (!Array.isArray(value.subscriptions)) value.subscriptions = [];
@@ -165,6 +180,7 @@ export class Notifier {
     const { publicKey, privateKey } = this.store.value.vapid;
     const results = await Promise.all(subscriptions.map(async (item) => {
       try {
+        this.send ??= (await loadWebpush()).sendNotification; // a failed load is reported like a failed send
         await this.send({ endpoint: item.endpoint, keys: item.keys }, JSON.stringify(payload), {
           vapidDetails: { subject: this.subject, publicKey, privateKey },
           TTL: 3600,
