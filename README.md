@@ -13,6 +13,15 @@ MacRemote.app（菜单栏，持有系统权限）──spawn──▶ agent (Nod
 - **白名单在 Mac 上执行**：所有能力都是 `shared/actions.js` 里的具名动作；relay 只转发，参数校验和风险判断（`agent/policy.js`）都在 agent 里。全系统没有执行任意命令的入口。
 - **公网只暴露一个中性登录页**（密码 + TOTP）；控制界面的 HTML/JS 也必须登录后才下发，全站 `noindex`。
 
+## 仓库结构
+
+这个仓库还包含手机终端 [remote-term](remote-term/README.md)（term.dkz12345.com）。两者分开部署、分开登录，Orbit 也依然没有执行任意命令的入口；只是在 Mac 上合成了一个菜单栏 App：MacRemote.app 同时拉起 Orbit 的 agent 和终端（终端以独立的权限身份运行，见下文「在 Mac 上常驻」）。
+
+- 根目录：Orbit（手机控制）和 MacRemote.app 菜单栏程序。
+- `remote-term/`：手机终端，有自己的 agent、relay、网页和测试。
+
+分支：`main` 是合并后的版本；`mac-remote` 和 `remote-term` 是 2026-10 合并前两个仓库各自的最后版本。
+
 ## 目录
 
 | 路径 | 作用 |
@@ -20,8 +29,9 @@ MacRemote.app（菜单栏，持有系统权限）──spawn──▶ agent (Nod
 | `shared/actions.js` | 动作目录 + 参数形状校验（三端共用） |
 | `agent/` | Mac 端：注册表、策略、各项控制、状态快照、relay 客户端、审计 |
 | `helper/macctl.swift` | 原生小助手：应用列表/图标/退出、CoreAudio 输出设备、媒体键、夜览、内建屏亮度 |
-| `launcher/` | `MacRemote.app` 菜单栏壳：拉起 agent、显示连接状态、一键暂停、登录时启动 |
+| `launcher/` | `MacRemote.app` 菜单栏壳：拉起 agent 和手机终端（`remote-term/` 的助手）、显示连接状态、外接屏亮度与待机、一键暂停、登录时启动 |
 | `relay/` | Azure 端：登录（scrypt + TOTP + 会话）、转发、静态资源闸门；`deploy/` 里是 systemd 与 nginx 模板 |
+| `remote-term/` | 手机终端（term.dkz12345.com），说明见 [remote-term/README.md](remote-term/README.md) |
 | `web/public/` | 公开的中性登录页与 PWA 图标 |
 | `web/app/` | 控制界面（仅登录后可访问） |
 | `scripts/preview.js` | 本机 UI 预览：读取真实状态，所有修改仅模拟 |
@@ -50,11 +60,13 @@ MAC_REMOTE_CONFIG=/tmp/agent-dev.json node agent/index.js
 
 ```bash
 node agent/setup.js wss://control.dkz12345.com/agent  # 生成设备令牌；把打印的 AGENT_TOKEN_SHA256 填进服务器的 relay/.env
-bash launcher/build.sh                                 # 编译、签名、安装 ~/Applications/MacRemote.app
+bash launcher/build.sh                                 # 编译、签名、安装 ~/Applications/MacRemote.app（--check 只编译不安装）
 open ~/Applications/MacRemote.app
 ```
 
 首次运行时按提示授权：**蓝牙**（开关蓝牙）、**自动化 → System Events**（深色模式）、**辅助功能**（媒体键，菜单里有入口）。菜单栏里可以勾选「登录时自动启动」，也可以随时「暂停远程控制」。
+
+**手机终端**也在这个菜单栏图标里。`build.sh` 从本仓库的 `remote-term/`（或 `REMOTE_TERM_DIR`）编译终端助手 `RemoteTerm.app`，装在 `~/Library/Application Support/MacRemote/`（不能放进 MacRemote.app：系统把 App 包里的代码都算作这个 App）。助手以自己的身份（`dev.remote-term.launcher`）运行，MacRemote 启动它时放弃了权限责任：远程 shell 只有 RemoteTerm 的完全磁盘访问，拿不到上面这些权限；Orbit 的 agent 也拿不到完全磁盘访问。系统没确认这种隔离时终端不会启动。暂停终端、退出或重装 MacRemote 都会结束终端会话（有会话时会先确认）。日志在 `~/Library/Logs/MacRemote/`：`agent.log` 是手机控制，`terminal.log` 是终端，只有本人可读，超过 2 MB 自动轮换。
 
 ## 部署：control.dkz12345.com
 

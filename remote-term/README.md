@@ -2,11 +2,13 @@
 
 在 iPhone 上使用这台 Mac 的终端：面容 ID 登录，端到端加密，会话常驻在 Mac 上，断线回来画面原样恢复。
 
+这是 [mac-remote](../README.md) 仓库里的 `remote-term/` 目录（2026-10 之前是独立仓库，那时的版本在 `remote-term` 分支）。下面的命令都在这个目录里运行。
+
 ```
 手机 PWA ──HTTPS/WSS──▶ nginx(TLS) ──▶ relay (Node, 127.0.0.1:3040)             [Azure]
                                           ▲  只转发密文
                                           │  WSS 出站长连接（设备令牌）
-RemoteTerm.app（菜单栏）──spawn──▶ agent (Node) ──node-pty──▶ zsh -l             [Mac]
+MacRemote.app（菜单栏）▶ RemoteTerm 助手 ──spawn──▶ agent (Node) ──node-pty──▶ zsh -l  [Mac]
                                     └ 每个会话一个无头 xterm：断线期间照收输出，重连时发屏幕快照
 ```
 
@@ -14,7 +16,7 @@ RemoteTerm.app（菜单栏）──spawn──▶ agent (Node) ──node-pty─
 - **Mac 自己验证身份**：通行密钥的签名由 agent 用本机保存的公钥核对，relay 的登录只是外层的门。服务器被攻破，也打不开 shell。
 - **端到端加密**：手机和 Mac 之间每条连接都用 ECDH 协商新的 AES-GCM 密钥，relay 转发的全是密文。细节见 [docs/protocol.md](docs/protocol.md)。
 - **公网只暴露中性页面**：登录页和配对页不出现描述用途的词，App 本体登录后才下发，全站 `noindex`。
-- 和 [mac-remote](https://github.com/Leo-learner/mac-remote)（Orbit）完全独立：Orbit 承诺"没有执行任意命令的入口"，终端正好相反，所以分开部署、分开登录。
+- 和仓库根目录的 [Orbit（mac-remote）](../README.md) 分开部署、分开登录：Orbit 承诺"没有执行任意命令的入口"，终端正好相反。Mac 上两者共用 MacRemote.app 的菜单栏图标，但终端由内嵌的 RemoteTerm 助手以自己的权限身份运行（见下文「权限」）。
 
 ## 目录
 
@@ -23,7 +25,7 @@ RemoteTerm.app（菜单栏）──spawn──▶ agent (Node) ──node-pty─
 | `shared/` | 手机、relay、Mac 三端共用：字节工具、加密通道与握手（WebCrypto）、帧格式 |
 | `agent/` | Mac 端：通行密钥与配对、票据、会话（node-pty + 无头 xterm）、手机连接、推送、relay 客户端 |
 | `agent/shell/zsh/` | zsh 集成：先加载你自己的 dotfiles，再标记命令开始/结束/目录（OSC 133 / 7） |
-| `launcher/` | `RemoteTerm.app` 菜单栏壳：拉起 agent、配对二维码、完全磁盘访问检查、登录时启动 |
+| `launcher/` | RemoteTerm 助手（`helper/`，由 MacRemote.app 拉起）：以独立的权限身份运行 agent；`build-helper.sh` 编译签名。菜单栏界面在 mac-remote 仓库 |
 | `relay/` | 服务器端：通行密钥登录（外层门）、Cookie 会话、静态资源闸门、WebSocket 转发；`deploy/` 是 nginx 与 systemd 模板 |
 | `web/public/` | 公开的登录页、配对页、Service Worker、PWA 清单与图标 |
 | `web/app/` | 终端 App（登录后才下发）；`vendor/` 由 `npm run vendor` 从 xterm.js 复制 |
@@ -56,18 +58,21 @@ ssh -i <私钥> leo@20.48.14.96 'cd /opt/apps/remote-term-relay/relay && npm ci 
 
 ```bash
 node agent/setup.js wss://term.dkz12345.com/agent   # 打印 AGENT_TOKEN_SHA256，填进服务器 relay/.env 后重启服务
-bash launcher/build.sh                              # 编译、签名、安装 ~/Applications/RemoteTerm.app
-open ~/Applications/RemoteTerm.app
+bash ../launcher/build.sh                           # 根目录的 MacRemote 构建脚本：编译安装 MacRemote.app 和终端助手
+open ~/Applications/MacRemote.app
+bash launcher/build.sh --check                      # 只检查助手能否编译、签名（不安装）
 ```
 
-然后在 RemoteTerm 窗口里：给它开**完全磁盘访问**（授权后重开一次 App），勾选**登录时自动启动**，点**配对新设备…**，用 iPhone 相机扫码。配对完成后在 Safari 里「添加到主屏幕」，从主屏幕打开再用面容 ID 登录一次（主屏幕 App 和 Safari 的存储是分开的）。
+终端不再单独安装：`build-helper.sh` 产出的 `RemoteTerm.app` 装在 `~/Library/Application Support/MacRemote/`，由 MacRemote 拉起。然后在 MacRemote 的状态窗口里：给 **RemoteTerm** 开**完全磁盘访问**（授权后点「重启终端」），点**配对新设备…**，用 iPhone 相机扫码。配对完成后在 Safari 里「添加到主屏幕」，从主屏幕打开再用面容 ID 登录一次（主屏幕 App 和 Safari 的存储是分开的）。日志在 `~/Library/Logs/MacRemote/terminal.log`（不记录配对链接）。
+
+**权限**：MacRemote 启动助手时放弃了对它的隐私权限责任（`responsibility_spawnattrs_setdisclaim`），所以 shell 只拿得到 RemoteTerm（`dev.remote-term.launcher`）的完全磁盘访问，拿不到 MacRemote 的辅助功能、输入监控、蓝牙；放弃失败时 MacRemote 不启动终端，而不是退回普通方式启动。助手和以前的 RemoteTerm.app 用同一个 Apple Development 证书、同一个 bundle id 签名，所以原来的授权继续有效。助手不能放进 MacRemote.app 里面：系统把 App 包里的代码都算作这个 App，那样 shell 反而会拿到 MacRemote 的权限。
 
 重新配对 Mac（`node agent/setup.js … --force`）后，要把新的 `AGENT_TOKEN_SHA256` 同步到服务器。
 
 ## 行为说明
 
 - **面容 ID 的频率**：闲置 12 小时后打开 App 需要重新刷脸；天天在用就不会被要求（`agent/tickets.js`）。
-- **会话在 agent 进程里**：暂停、退出或重装 RemoteTerm 会结束所有会话（菜单会先确认）。手机断线、relay 重启都不影响会话。
+- **会话在 agent 进程里**：暂停终端、退出或重装 MacRemote 会结束所有会话（菜单会先确认）。手机断线、relay 重启都不影响会话。
 - **键盘弹起不改终端尺寸**：终端保持完整行数、整体上移露出光标，避免每次弹键盘都让 zsh 重画提示符、让 Claude Code 整屏重绘。
 - **慢网络**：手机没跟上的输出超过 512 KB 就停发，追上后发一份最新屏幕，而不是补播积压。
 - **撰写栏**：在原生输入框里写整行（中文输入、听写都在本地），多行内容用括号粘贴一次发出；关 Wi-Fi、关机、退出 Clash、`rm -rf ~` 这类命令发送前会确认。这只是提醒，拦不住别名和脚本。
