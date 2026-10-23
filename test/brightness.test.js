@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ActionError } from '../agent/exec.js';
-import { ddcIo, ddcScreens, setBrightness } from '../agent/controls/display.js';
+import { ddcIo, ddcScreens, setBrightness, standbyIo } from '../agent/controls/display.js';
 import { invalidatedBy } from '../agent/state.js';
 
 const ONE = '[1] VG2481-4K (9384AAC3-66EE-4133-90D2-2B95F987A2C7)';
@@ -110,6 +110,19 @@ test('with two monitors, m1ddc addresses each by its index', async () => {
   await setBrightness({ display: 'ddc:2', value: 50 });
   assert.deepEqual(writes(), ['m1ddc display 2 set luminance 50']);
   assert.ok(!calls.some((call) => call.startsWith('macctl')));
+});
+
+test('under MacRemote, each level written is reported to the menu bar app; without it, nothing is printed', async () => {
+  nextScene();
+  monitor.list = ONE;
+  const reports = [];
+  standbyIo.report = (event, details) => reports.push({ event, ...details });
+  process.env.MAC_REMOTE_PARENT_PIPE = '1';
+  await setBrightness({ display: 'ddc:1', value: 42 });
+  assert.deepEqual(reports, [{ event: 'brightness', display: 'ddc:1', value: 42 }]);
+  delete process.env.MAC_REMOTE_PARENT_PIPE;
+  await setBrightness({ display: 'ddc:1', value: 43 });
+  assert.equal(reports.length, 1);
 });
 
 test("an external monitor's brightness leaves the native state cached; the built-in panel's does not", () => {

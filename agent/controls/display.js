@@ -201,12 +201,21 @@ function writeLuminance(index, level, viaMacctl) {
     const result = await sendLuminance(index, write.level, viaMacctl);
     if (result.ok) {
       levels.set(index, { level: write.level, at: Date.now(), written: true });
+      reportLevel(index, write.level);
       if (viaMacctl && !waitingWrites.has(index)) verifyLevel(index, write.level);
     }
     return result;
   }, viaMacctl ? DIRECT_GAP_MS : DDC_GAP_MS);
   waitingWrites.set(index, write);
   return write.done;
+}
+
+// Under MacRemote every level written, whoever asked for it, goes to the menu bar app too, so its
+// slider and the keyboard's brightness keys step from what the monitor shows.
+function reportLevel(index, level) {
+  if (!launcherWatches()) return;
+  const max = maxLuminance.get(index)?.value ?? 100;
+  standbyIo.report('brightness', { display: `ddc:${index}`, value: Math.min(100, Math.round((level / max) * 100)) });
 }
 
 // The last write of a drag is read back once, and sent again if the monitor did not take it: a

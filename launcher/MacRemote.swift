@@ -67,7 +67,7 @@ func qrImage(_ text: String, points: CGFloat) -> NSImage? {
 // count updates stay out, and a relay outage leaves its first line plus, on the next `connected`,
 // the number of attempts that failed, instead of three lines per retry for hours.
 final class AgentLog {
-    private static let unlogged: Set<String> = ["reply", "pairing", "sessions", "links", "watch-input"]
+    private static let unlogged: Set<String> = ["reply", "pairing", "sessions", "links", "watch-input", "brightness"]
     private static let rotateAt: off_t = 2 << 20
 
     private let path: String
@@ -649,6 +649,100 @@ final class BluetoothPrompt: NSObject, CBCentralManagerDelegate {
     }
 }
 
+// MARK: - Brightness keys
+
+// The keyboard's brightness keys (F1/F2 on Apple keyboards, and other keyboards that send the same
+// HID usage) reach apps as system-defined events. macOS applies them only to panels it can dim
+// itself, so an external monitor ignores them. This tap sees them first and lets `handle` take a
+// press; a key it takes, press and release, goes no further. An active tap needs the Accessibility
+// grant this app already holds for media keys; without it, start() fails and the keys stay the
+// system's.
+final class BrightnessKeys {
+    private static let systemDefined = CGEventType(rawValue: 14)! // NX_SYSDEFINED
+    private static let auxControlButtons: Int16 = 8 // NX_SUBTYPE_AUX_CONTROL_BUTTONS
+    private static let brightnessUp = 2 // NX_KEYTYPE_BRIGHTNESS_UP
+    private static let brightnessDown = 3 // NX_KEYTYPE_BRIGHTNESS_DOWN
+
+    // (up, fine) -> whether the press was taken. Fine is Option-Shift, quarter steps as in macOS.
+    var handle: (_ up: Bool, _ fine: Bool) -> Bool = { _, _ in false }
+    private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
+    private var taken: Set<Int> = [] // keys whose press was taken, so that their release is too
+
+    @discardableResult
+    func start() -> Bool {
+        if tap != nil { return true }
+        let mask = CGEventMask(1) << Self.systemDefined.rawValue
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap, eventsOfInterest: mask,
+            callback: { _, type, event, refcon in
+                Unmanaged<BrightnessKeys>.fromOpaque(refcon!).takeUnretainedValue().filter(type, event)
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return false }
+        self.tap = tap
+        source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+        // Common modes: the keys keep working while a menu or an alert is open.
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        return true
+    }
+
+    func stop() {
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        CFMachPortInvalidate(tap)
+        self.tap = nil
+        source = nil
+        taken.removeAll()
+    }
+
+    private func filter(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+        let passOn = Unmanaged.passUnretained(event)
+        // macOS switches a tap off when a callback was slow or secure input began: switch it back on.
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return passOn
+        }
+        guard type == Self.systemDefined, let key = NSEvent(cgEvent: event),
+              key.subtype.rawValue == Self.auxControlButtons else { return passOn }
+        let code = (key.data1 & 0xFFFF_0000) >> 16
+        guard code == Self.brightnessUp || code == Self.brightnessDown else { return passOn }
+        let pressed = (key.data1 & 0xFF00) >> 8 == 0x0A // 0x0B is the release; a held key repeats presses
+        guard pressed else { return taken.remove(code) != nil ? nil : passOn }
+        guard handle(code == Self.brightnessUp, key.modifierFlags.contains([.option, .shift])) else {
+            taken.remove(code)
+            return passOn
+        }
+        taken.insert(code)
+        return nil
+    }
+}
+
+// The system's own brightness indicator, from the private OSD framework, which is what macOS shows
+// for the built-in panel. The method is checked against the signature it is called with; if that
+// ever changes, there is no indicator rather than a crash.
+enum BrightnessHUD {
+    private typealias Show = @convention(c) (AnyObject, Selector, Int64, UInt32, UInt32, UInt32, UInt32, UInt32, Bool) -> Void
+    private static let selector = NSSelectorFromString(
+        "showImage:onDisplayID:priority:msecUntilFade:filledChiclets:totalChiclets:locked:")
+    private static let target: (manager: AnyObject, show: Show)? = {
+        guard Bundle(path: "/System/Library/PrivateFrameworks/OSD.framework")?.load() == true,
+              let osd = NSClassFromString("OSDManager"),
+              let method = class_getInstanceMethod(osd, selector),
+              let encoding = method_getTypeEncoding(method),
+              String(cString: encoding) == "v48@0:8q16I24I28I32I36I40B44",
+              let manager = (osd as AnyObject).perform(NSSelectorFromString("sharedManager"))?.takeUnretainedValue()
+        else { return nil }
+        return (manager, unsafeBitCast(method_getImplementation(method), to: Show.self))
+    }()
+
+    static func show(_ percent: Int, on display: CGDirectDisplayID) {
+        guard let target else { return }
+        // Image 1 is the brightness sun; priority and fade time are the ones macOS uses for its keys.
+        target.show(target.manager, selector, 1, display, 0x1F4, 1000, UInt32(max(0, min(100, percent))), 100, false)
+    }
+}
+
 // MARK: - Status window
 
 struct ServiceState: Equatable {
@@ -820,7 +914,7 @@ struct StatusView: View {
                 Spacer()
                 Button("查看日志", action: model.openLogs)
             }
-            Text("菜单栏图标里有外接屏的亮度滑块；关掉这个窗口后 MacRemote 仍在菜单栏运行，再次打开 App 会重新显示这里。")
+            Text("菜单栏图标里有外接屏的亮度滑块，键盘上的亮度键也能调它；关掉这个窗口后 MacRemote 仍在菜单栏运行，再次打开 App 会重新显示这里。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -890,6 +984,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var pendingBrightness: Int?
     private var brightnessTimer: Timer?
     private var lastBrightnessSend = Date.distantPast
+    private let brightnessKeys = BrightnessKeys()
+    private var keysItem: NSMenuItem!
+    private var keyTarget: Double? // the exact level of the last key step, before rounding to a percent
     private var wakeTimer: Timer?
     private var sawQuiet = false
 
@@ -913,6 +1010,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         let manualLaunch = !launchedAsLoginItem()
         buildMenu()
+        brightnessKeys.handle = { [weak self] up, fine in self?.brightnessKey(up: up, fine: fine) ?? false }
+        if keysEnabled { brightnessKeys.start() }
         orbit.onEvent = { [weak self] event in self?.handleOrbit(event) }
         orbit.onExit = { [weak self] in self?.orbitExited() }
         orbit.onChange = { [weak self] in self?.render() }
@@ -936,6 +1035,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        if keysEnabled { brightnessKeys.start() } // picks up an Accessibility grant made since launch
         refreshCaches(permissions: false)
         askScreens()
         askTerminal("status")
@@ -986,6 +1086,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         for line in [orbitLine, terminalLine, countsLine] { line.isEnabled = false }
         brightnessItem = makeBrightnessItem()
         displayPowerItem = item("关闭显示器", #selector(toggleDisplayPower))
+        keysItem = item("用键盘亮度键调节", #selector(toggleBrightnessKeys))
         pairItem = item("配对新设备…", #selector(pair))
         orbitPauseItem = item("暂停远程控制", #selector(toggleOrbitPause))
         terminalPauseItem = item("暂停终端", #selector(toggleTerminalPause))
@@ -996,6 +1097,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(displaySeparator)
         menu.addItem(brightnessItem)
         menu.addItem(displayPowerItem)
+        menu.addItem(keysItem)
         menu.addItem(.separator())
         menu.addItem(item("显示状态窗口…", #selector(showWindow)))
         menu.addItem(item("打开控制面板", #selector(openPanel)))
@@ -1060,6 +1162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func showDisplayControls(_ visible: Bool) {
         displaySeparator.isHidden = !visible
         brightnessItem.isHidden = !visible
+        keysItem.isHidden = !visible
         displayPowerItem.isHidden = !visible
     }
 
@@ -1090,7 +1193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     @objc private func brightnessChanged(_ sender: NSSlider) {
-        let value = Int(sender.doubleValue.rounded())
+        keyTarget = nil
+        queueBrightness(Int(sender.doubleValue.rounded()))
+    }
+
+    private func queueBrightness(_ value: Int) {
         brightnessReadout.stringValue = "\(value)%"
         pendingBrightness = value
         let since = Date().timeIntervalSince(lastBrightnessSend)
@@ -1112,6 +1219,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         pendingBrightness = nil
         lastBrightnessSend = Date()
         askOrbit(["action": "display.brightness.set", "params": ["display": screenId, "value": value]])
+    }
+
+    private var keysEnabled: Bool {
+        UserDefaults.standard.object(forKey: "brightnessKeys") as? Bool ?? true
+    }
+
+    @objc private func toggleBrightnessKeys() {
+        let enabled = !keysEnabled
+        UserDefaults.standard.set(enabled, forKey: "brightnessKeys")
+        if enabled { brightnessKeys.start() } else { brightnessKeys.stop() }
+        render()
+    }
+
+    // A brightness key, when it is meant for the external monitor: in macOS's 16 steps (64 with
+    // Option-Shift), shown with the system's indicator, sent like a slider move.
+    private func brightnessKey(up: Bool, fine: Bool) -> Bool {
+        guard keysEnabled, screenId != nil, !displayAsleep, orbit.isRunning,
+              let display = externalDisplayForKeys() else { return false }
+        let step = 100.0 / (fine ? 64 : 16)
+        let shown = brightnessSlider.doubleValue
+        let current = keyTarget.flatMap { abs($0 - shown) < 1 ? $0 : nil } ?? shown
+        let index = up ? (current / step + 1e-6).rounded(.down) + 1 : (current / step - 1e-6).rounded(.up) - 1
+        let target = min(100, max(0, index * step))
+        keyTarget = target
+        brightnessSlider.doubleValue = target
+        let value = Int(target.rounded())
+        queueBrightness(value)
+        BrightnessHUD.show(value, on: display)
+        return true
+    }
+
+    // The one external screen, when the keys are for it: always with the lid closed; with the
+    // built-in panel on, only while the pointer is on the external screen (on the panel, the keys
+    // stay the system's).
+    private func externalDisplayForKeys() -> CGDirectDisplayID? {
+        let screens = NSScreen.screens.compactMap { screen -> (frame: NSRect, id: CGDirectDisplayID)? in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            return (screen.frame, number.uint32Value)
+        }
+        let external = screens.filter { CGDisplayIsBuiltin($0.id) == 0 }
+        guard external.count == 1, let monitor = external.first else { return nil }
+        if screens.count == 1 { return monitor.id }
+        return NSMouseInRect(NSEvent.mouseLocation, monitor.frame, false) ? monitor.id : nil
     }
 
     // DDC standby: the Mac keeps sending a picture, so the display stays dark until it is woken
@@ -1176,6 +1326,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             watchForInput(on)
         case "display":
             if event["awake"] as? Bool == true { setDisplayAsleep(false) }
+        case "brightness":
+            // A level written from anywhere, the phone included, so the next key press steps from
+            // it. This app's own writes come back too; while it is still sending, its value is newer.
+            guard event["display"] as? String == screenId, let value = event["value"] as? Int,
+                  Date().timeIntervalSince(lastBrightnessSend) > 1.5, pendingBrightness == nil else { break }
+            keyTarget = nil
+            brightnessSlider.doubleValue = Double(value)
+            brightnessReadout.stringValue = "\(value)%"
         default:
             break
         }
@@ -1316,6 +1474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         retitle(orbitPauseItem, orbit.paused ? "恢复远程控制" : "暂停远程控制")
         retitle(terminalPauseItem, terminal.paused ? "恢复终端" : "暂停终端")
         loginItem.state = loginEnabled ? .on : .off
+        keysItem.state = keysEnabled ? .on : .off
 
         guard let model else { return }
         let orbitDetail = orbit.link == "unconfigured"
