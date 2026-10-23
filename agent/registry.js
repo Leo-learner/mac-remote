@@ -65,6 +65,6 @@ export async function dispatch(action, rawParams = {}, meta = {}) {
     audit({ action, params: adjusted.params, ok: false, error: error.code || 'internal', message: error.message, via: meta.via });
     throw error;
   } finally {
-    invalidateFor(action);
+    invalidateFor(action, adjusted.params);
   }
 }

@@ -301,6 +301,7 @@ func displays() -> [[String: Any]] {
 let ddcChipAddress: UInt32 = 0x37
 let ddcDataAddress: UInt32 = 0x51
 let vcpDisplayPower: UInt8 = 0xD6
+let vcpLuminance: UInt8 = 0x10
 
 typealias AVServiceCreate = @convention(c) (CFAllocator?) -> Unmanaged<CFTypeRef>?
 typealias AVWriteI2C = @convention(c) (CFTypeRef, UInt32, UInt32, UnsafeMutableRawPointer, UInt32) -> Int32
@@ -317,22 +318,52 @@ func externalAVService() -> CFTypeRef? {
     return unsafeBitCast(symbol, to: AVServiceCreate.self)(kCFAllocatorDefault)?.takeRetainedValue()
 }
 
-// One "set VCP feature" message: length, opcode, feature, value (big endian), checksum.
-func ddcWrite(_ service: CFTypeRef, feature: UInt8, value: UInt16) -> Bool {
+// One DDC/CI message to the display: length byte, payload, checksum (seeded with the addresses).
+func ddcSend(_ service: CFTypeRef, _ payload: [UInt8]) -> Bool {
     guard let symbol = ioKitSymbol("IOAVServiceWriteI2C") else { return false }
     let write = unsafeBitCast(symbol, to: AVWriteI2C.self)
-    var packet: [UInt8] = [0x84, 0x03, feature, UInt8(value >> 8), UInt8(value & 0xFF), 0]
-    packet[5] = packet.prefix(5).reduce(0x6E ^ UInt8(ddcDataAddress)) { $0 ^ $1 }
-    // Displays miss single messages often enough that m1ddc sends each one twice, spaced out.
+    var packet = [0x80 | UInt8(payload.count)] + payload
+    packet.append(packet.reduce(0x6E ^ UInt8(ddcDataAddress)) { $0 ^ $1 })
+    return packet.withUnsafeMutableBufferPointer { buffer in
+        write(service, ddcChipAddress, ddcDataAddress, buffer.baseAddress!, UInt32(buffer.count)) == 0
+    }
+}
+
+// One "set VCP feature" message: opcode, feature, value (big endian). Displays miss single messages
+// often enough that m1ddc sends each one twice, spaced out; standby keeps doing that, since nothing
+// reads it back. Brightness is sent once and read back by the agent instead.
+func ddcWrite(_ service: CFTypeRef, feature: UInt8, value: UInt16, twice: Bool = true) -> Bool {
+    let payload: [UInt8] = [0x03, feature, UInt8(value >> 8), UInt8(value & 0xFF)]
     var ok = false
-    for _ in 0..<2 {
-        usleep(20_000)
-        let sent = packet.withUnsafeMutableBufferPointer { buffer in
-            write(service, ddcChipAddress, ddcDataAddress, buffer.baseAddress!, UInt32(buffer.count)) == 0
-        }
-        ok = ok || sent
+    for _ in 0..<(twice ? 2 : 1) {
+        if twice { usleep(20_000) }
+        ok = ddcSend(service, payload) || ok
     }
     return ok
+}
+
+// "Get VCP feature": ask, give the display the 40 ms DDC/CI allows it to prepare the reply, then
+// read the reply and believe it only if it is a well-formed answer to this question. m1ddc asks
+// twice and reads after 10 ms, and on the VG2481-4K three reads in four came back as 0 that way;
+// asked like this, 30 of 30 were valid. A garbled reply is asked again, at most three times.
+func ddcRead(_ service: CFTypeRef, feature: UInt8) -> (current: Int, max: Int)? {
+    guard let symbol = ioKitSymbol("IOAVServiceReadI2C") else { return nil }
+    let read = unsafeBitCast(symbol, to: AVWriteI2C.self) // same shape: service, chip, offset, buffer, size
+    for attempt in 0..<3 {
+        if attempt > 0 { usleep(50_000) }
+        guard ddcSend(service, [0x01, feature]) else { continue }
+        usleep(40_000)
+        var reply = [UInt8](repeating: 0, count: 12)
+        let received = reply.withUnsafeMutableBufferPointer { buffer in
+            read(service, ddcChipAddress, ddcDataAddress, buffer.baseAddress!, UInt32(buffer.count)) == 0
+        }
+        // source 0x6E, length 0x88, "VCP reply", result 0 (supported), the feature asked for, type,
+        // max (2 bytes), current (2 bytes), then a checksum seeded with the host's address 0x50.
+        guard received, reply[0] == 0x6E, reply[1] == 0x88, reply[2] == 0x02, reply[3] == 0x00, reply[4] == feature,
+              reply[0..<10].reduce(UInt8(0x50), { $0 ^ $1 }) == reply[10] else { continue }
+        return (Int(reply[8]) << 8 | Int(reply[9]), Int(reply[6]) << 8 | Int(reply[7]))
+    }
+    return nil
 }
 
 // VCP D6 "display power mode": 1 = on, 4 = off (standby). Value 5, the hard off, is deliberately
@@ -425,6 +456,16 @@ case ("display", "set-brightness"):
 case ("display", "awake"):
     guard arg(2) == "on" || arg(2) == "off" else { fail("usage: display awake on|off") }
     emit(["ok": setDisplayAwake(arg(2) == "on")])
+// External monitor brightness (VCP 10) on the default DDC display, in the monitor's own units.
+case ("display", "ddc-luminance"):
+    guard let service = externalAVService() else { fail("no-ddc-display") }
+    guard let reading = ddcRead(service, feature: vcpLuminance) else { fail("ddc-no-reply") }
+    emit(["ok": true, "current": reading.current, "max": reading.max])
+case ("display", "ddc-set-luminance"):
+    guard let value = UInt16(arg(2)) else { fail("usage: display ddc-set-luminance <value>") }
+    guard let service = externalAVService() else { fail("no-ddc-display") }
+    guard ddcWrite(service, feature: vcpLuminance, value: value, twice: false) else { fail("ddc-write-failed") }
+    emit(["ok": true])
 case ("display", "wait-for-input"):
     emit(["ok": true, "input": waitForDeliberateInput(timeout: Double(arg(2)) ?? 1800)])
 
@@ -435,5 +476,6 @@ case ("ax-trusted", let flag):
 default:
     fail("usage: macctl state | apps running|installed|icon <path> [size]|hide|quit|force-quit <pid>"
         + " | audio outputs|set-output <uid> | media play|next|prev | nightshift get|set on|off"
-        + " | display list|set-brightness <id> <0-100>|awake on|off|wait-for-input <seconds> | ax-trusted [--prompt]")
+        + " | display list|set-brightness <id> <0-100>|ddc-luminance|ddc-set-luminance <value>|awake on|off"
+        + "|wait-for-input <seconds> | ax-trusted [--prompt]")
 }

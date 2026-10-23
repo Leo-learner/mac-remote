@@ -1094,11 +1094,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         brightnessReadout.stringValue = "\(value)%"
         pendingBrightness = value
         let since = Date().timeIntervalSince(lastBrightnessSend)
-        // DDC writes are queued 400 ms apart in the agent; sending faster than that only piles up.
-        if since >= 0.2 {
+        // A DDC write takes 60-160 ms to reach the monitor, and the agent keeps at most one waiting
+        // and moves it to the newest value: every 0.1 s keeps the screen about a step behind the drag.
+        if since >= 0.1 {
             flushBrightness()
         } else if brightnessTimer == nil {
-            brightnessTimer = Timer.scheduledTimer(withTimeInterval: 0.2 - since, repeats: false) { [weak self] _ in
+            brightnessTimer = Timer.scheduledTimer(withTimeInterval: 0.1 - since, repeats: false) { [weak self] _ in
                 self?.flushBrightness()
             }
         }

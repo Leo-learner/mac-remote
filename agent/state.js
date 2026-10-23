@@ -27,7 +27,10 @@ const INVALIDATES = {
   'wifi.set': ['wifi', 'uplink'],
   'bluetooth.set': ['bluetooth'],
   'proxy.set': ['proxy'],
-  'display.brightness.set': ['ddc', 'native'],
+  // An external monitor's level lives in the DDC reading only. Re-reading the native state (apps,
+  // audio, the built-in panel) after every step of a drag would make the next step's policy check
+  // wait for it.
+  'display.brightness.set': ({ display }) => (display.startsWith('ddc:') ? ['ddc'] : ['native']),
   'display.dark.set': ['dark'],
   'display.nightShift.set': ['native'],
   'display.stageManager.set': ['stageManager'],
@@ -73,8 +76,14 @@ function read(name) {
 // The launcher's brightness slider reads the same cached value the phone's snapshot uses.
 export const cachedDdcScreens = () => read('ddc');
 
-export function invalidateFor(action) {
-  for (const name of INVALIDATES[action] ?? []) cache.delete(name);
+// The readers an action makes stale.
+export function invalidatedBy(action, params = {}) {
+  const names = INVALIDATES[action] ?? [];
+  return typeof names === 'function' ? names(params) : names;
+}
+
+export function invalidateFor(action, params = {}) {
+  for (const name of invalidatedBy(action, params)) cache.delete(name);
 }
 
 export async function snapshot() {

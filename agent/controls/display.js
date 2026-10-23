@@ -5,33 +5,73 @@ import { dirname, join } from 'node:path';
 import { CONFIG_FILE } from '../config.js';
 import { ActionError, BIN, macctl, osascript, run, runOrThrow } from '../exec.js';
 
-// DDC/CI over USB-C/DisplayPort is fragile. Measured on the VG2481-4K (m1ddc 1.2.0): back-to-back
-// reads failed 11 times out of 12, reads 400 ms apart failed about half the time, a failed read
-// still exits 0 and prints 0 or -125, and a reply can even answer the previous command. So every
-// m1ddc call waits its turn in one queue with a pause after it, a reading only counts once two
-// replies agree, and the level we last wrote beats a lone reply.
-const DDC_GAP_MS = 400;
+// Every DDC message waits its turn in one queue, with a pause after it: a monitor that is still
+// busy with the last message ignores or garbles the next one.
+//
+// With one external monitor (this Mac's setup), macctl talks DDC itself: it gives the monitor the
+// 40 ms DDC/CI allows to prepare a reply and checks the reply's checksum, so a reading is either
+// right or reported as failed. On the VG2481-4K that read 30 of 30 times, writes 50 ms apart all
+// landed, and a write takes about 3 ms plus macctl's start.
+//
+// m1ddc (1.2.0) remains for several monitors. It asks twice and reads after 10 ms: there, three
+// reads in four failed, a failed read still exits 0 and prints 0 or -125, and a reply can even
+// answer the previous command. So its calls are spaced 400 ms apart, a reading only counts once
+// two replies agree, and the level we last wrote beats a lone reply.
+const DDC_GAP_MS = 400; // after an m1ddc call
+const DIRECT_GAP_MS = 60; // after one of macctl's checked DDC messages
+const DIRECT_GIVE_UP = 3; // failed macctl readings in a row, with none ever good, before m1ddc takes over
 const READ_ATTEMPTS = 6;
 const WRITE_SETTLE_MS = 10_000; // after our own write, report it instead of reading it back
+const VERIFY_AFTER_MS = 50; // a drag's last write is read back this long after it went out
 const MAX_RETRY_MS = 10 * 60_000; // how long an unconfirmed max-luminance guess is kept
 const DISPLAY_LIST_TTL_MS = 60_000;
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let ddcQueue = Promise.resolve();
-function ddcTask(task) {
+function ddcTask(task, gapMs = DDC_GAP_MS) {
   const result = ddcQueue.then(task);
-  ddcQueue = result.catch(() => {}).then(() => pause(DDC_GAP_MS));
+  ddcQueue = result.catch(() => {}).then(() => pause(gapMs));
   return result;
 }
-const ddc = (args) => ddcTask(() => run(BIN.m1ddc, args, { timeoutMs: 4000 }));
+
+// The DDC calls, so the tests can stand in for macctl, m1ddc and the monitor.
+export const ddcIo = {
+  macctl,
+  run,
+};
+
+// macctl's DDC goes to the default external display, so it is used while that is the only one, and
+// until it has failed DIRECT_GIVE_UP times in a row without ever answering (another kind of setup).
+const direct = { works: false, failures: 0, uuids: '' };
+const useDirect = (displays) => displays.length === 1 && (direct.works || direct.failures < DIRECT_GIVE_UP);
+
+async function directLuminance() {
+  try {
+    const { current, max } = await ddcTask(() => ddcIo.macctl(['display', 'ddc-luminance'], { timeoutMs: 3000 }), DIRECT_GAP_MS);
+    if (!(Number.isInteger(max) && max > 0 && Number.isInteger(current) && current >= 0 && current <= max)) return null;
+    direct.works = true;
+    direct.failures = 0;
+    return { current, max };
+  } catch {
+    direct.failures += 1;
+    return null;
+  }
+}
+
+// One write as the queue runs it: macctl's, or m1ddc's for monitor `index`.
+const sendLuminance = (index, level, viaMacctl) => (viaMacctl
+  ? ddcIo.macctl(['display', 'ddc-set-luminance', String(level)], { timeoutMs: 3000 })
+    .then(() => ({ ok: true }), (error) => ({ ok: false, stderr: error.code }))
+  : ddcIo.run(BIN.m1ddc, ['display', String(index), 'set', 'luminance', String(level)], { timeoutMs: 4000 }));
 
 let displayList = { at: 0, list: null };
 
 // "[1] VG2481-4K (9384AAC3-66EE-4133-90D2-2B95F987A2C7)"
 export async function ddcDisplays() {
   if (displayList.list && Date.now() - displayList.at < DISPLAY_LIST_TTL_MS) return displayList.list;
-  const result = await ddc(['display', 'list']);
+  // Listing reads the IORegistry, not the monitor, so it needs no pause after it.
+  const result = await ddcTask(() => ddcIo.run(BIN.m1ddc, ['display', 'list'], { timeoutMs: 4000 }), DIRECT_GAP_MS);
   if (!result.ok) return displayList.list ?? [];
   const list = result.stdout.split('\n').flatMap((line) => {
     const match = line.match(/^\[(\d+)\]\s+(.+?)\s+\(([0-9A-Fa-f-]+)\)\s*$/);
@@ -42,6 +82,9 @@ export async function ddcDisplays() {
     return [{ index, name: match[2] === '(null)' ? known ?? '外接显示器' : match[2], uuid: match[3] }];
   });
   displayList = { at: Date.now(), list };
+  // A different set of monitors gets a fresh chance at macctl's DDC.
+  const uuids = list.map((item) => item.uuid).join(',');
+  if (uuids !== direct.uuids) Object.assign(direct, { works: false, failures: 0, uuids });
   return list;
 }
 
@@ -79,7 +122,7 @@ export function settleReading(replies, limit, known = null) {
 async function ddcReplies(index, verb, limit) {
   const replies = [];
   while (replies.length < READ_ATTEMPTS && confirmedReply(replies, limit) === null) {
-    const result = await ddc(['display', String(index), verb, 'luminance']);
+    const result = await ddcTask(() => ddcIo.run(BIN.m1ddc, ['display', String(index), verb, 'luminance'], { timeoutMs: 4000 }));
     replies.push(result.ok ? Number.parseInt(result.stdout, 10) : Number.NaN);
   }
   return replies;
@@ -87,9 +130,17 @@ async function ddcReplies(index, verb, limit) {
 
 const maxLuminance = new Map(); // display index -> { value, confirmed, at }
 
-async function ddcMaxLuminance(index) {
+async function ddcMaxLuminance(index, displays) {
   const cached = maxLuminance.get(index);
   if (cached && (cached.confirmed || Date.now() - cached.at < MAX_RETRY_MS)) return cached.value;
+  if (useDirect(displays)) {
+    const reading = await directLuminance();
+    if (reading) {
+      maxLuminance.set(index, { value: reading.max, confirmed: true, at: Date.now() });
+      return reading.max;
+    }
+    if (useDirect(displays)) return cached?.value ?? 100; // not given up on yet: try again next time
+  }
   const confirmed = confirmedReply(await ddcReplies(index, 'max', 0xffff), 0xffff);
   const entry = { value: confirmed ?? 100, confirmed: confirmed !== null, at: Date.now() };
   maxLuminance.set(index, entry);
@@ -101,12 +152,13 @@ const levels = new Map(); // display index -> { level, at, written }: what we la
 // External monitors that answer DDC, with brightness as 0-100 (scaled by the monitor's max).
 export async function ddcScreens() {
   const screens = [];
-  for (const display of await ddcDisplays()) {
-    const max = await ddcMaxLuminance(display.index);
+  const displays = await ddcDisplays();
+  for (const display of displays) {
+    const max = await ddcMaxLuminance(display.index, displays);
     let last = levels.get(display.index);
     if (!last?.written || Date.now() - last.at > WRITE_SETTLE_MS) {
       const startedAt = Date.now();
-      const level = settleReading(await ddcReplies(display.index, 'get', max), max, last?.level ?? null);
+      const level = await readLevel(display.index, displays, max, last?.level ?? null);
       last = levels.get(display.index);
       // A write that landed while we were reading is newer than anything we just read.
       const wroteMeanwhile = last?.written && last.at >= startedAt;
@@ -122,25 +174,52 @@ export async function ddcScreens() {
   return screens;
 }
 
+// One checked macctl reading, or m1ddc's agreeing replies.
+async function readLevel(index, displays, max, known) {
+  if (useDirect(displays)) {
+    const reading = await directLuminance();
+    if (reading || useDirect(displays)) return reading?.current ?? known;
+  }
+  return settleReading(await ddcReplies(index, 'get', max), max, known);
+}
+
 const waitingWrites = new Map(); // display index -> the write still waiting in the queue
 
-// A slider drag sends a value every ~180 ms, faster than the queue drains. At most one write per
-// display waits in the queue; newer values replace its target instead of queueing up.
-function writeLuminance(index, level) {
+// A slider sends a value every 100-180 ms while it is dragged. At most one write per display waits;
+// newer values replace its target instead of queueing up, so the monitor follows the finger
+// rather than replaying its path.
+function writeLuminance(index, level, viaMacctl) {
   const waiting = waitingWrites.get(index);
   if (waiting) {
     waiting.level = level;
     return waiting.done;
   }
   const write = { level };
+  // The write takes its place in the queue now; its value is read when its turn comes.
   write.done = ddcTask(async () => {
     waitingWrites.delete(index);
-    const result = await run(BIN.m1ddc, ['display', String(index), 'set', 'luminance', String(write.level)], { timeoutMs: 4000 });
-    if (result.ok) levels.set(index, { level: write.level, at: Date.now(), written: true });
+    const result = await sendLuminance(index, write.level, viaMacctl);
+    if (result.ok) {
+      levels.set(index, { level: write.level, at: Date.now(), written: true });
+      if (viaMacctl && !waitingWrites.has(index)) verifyLevel(index, write.level);
+    }
     return result;
-  });
+  }, viaMacctl ? DIRECT_GAP_MS : DDC_GAP_MS);
   waitingWrites.set(index, write);
   return write.done;
+}
+
+// The last write of a drag is read back once, and sent again if the monitor did not take it: a
+// message the monitor missed would otherwise leave the screen at a level the phone no longer shows.
+function verifyLevel(index, level) {
+  const stillLatest = () => !waitingWrites.has(index) && levels.get(index)?.level === level;
+  pause(VERIFY_AFTER_MS).then(async () => {
+    if (!stillLatest()) return;
+    const reading = await directLuminance();
+    if (!reading || reading.current === level || !stillLatest()) return;
+    const again = await ddcTask(() => sendLuminance(index, level, true), DIRECT_GAP_MS);
+    if (again.ok && stillLatest()) levels.set(index, { level, at: Date.now(), written: true });
+  });
 }
 
 export async function setBrightness({ display, value }) {
@@ -151,11 +230,12 @@ export async function setBrightness({ display, value }) {
     if (!screens.some((screen) => screen.id === id && screen.builtin)) throw new ActionError('no-such-display');
     await macctl(['display', 'set-brightness', String(id), String(value)]);
   } else {
-    if (!(await ddcDisplays()).some((item) => item.index === id)) throw new ActionError('no-such-display');
-    const level = Math.round((value / 100) * (await ddcMaxLuminance(id)));
-    const result = await writeLuminance(id, level);
+    const displays = await ddcDisplays();
+    if (!displays.some((item) => item.index === id)) throw new ActionError('no-such-display');
+    const level = Math.round((value / 100) * (await ddcMaxLuminance(id, displays)));
+    const result = await writeLuminance(id, level, useDirect(displays));
     if (!result.ok) {
-      throw new ActionError(result.timedOut ? 'timeout' : 'command-failed', `m1ddc: ${result.stderr || `exit ${result.code}`}`);
+      throw new ActionError(result.timedOut ? 'timeout' : 'command-failed', `ddc: ${result.stderr || `exit ${result.code}`}`);
     }
   }
   return { display, value };
