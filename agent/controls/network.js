@@ -119,7 +119,7 @@ async function primaryService() {
   throw new ActionError('no-network-service');
 }
 
-function portOpen(host, port, timeoutMs = 1500) {
+export function portOpen(host, port, timeoutMs = 1500) {
   return new Promise((resolve) => {
     const socket = connect({ host, port });
     const finish = (open) => {

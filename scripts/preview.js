@@ -36,6 +36,9 @@ function simulate(action, params, confirmed) {
     case 'bluetooth.set':
       s.network.bluetooth = { on: params.on };
       return { on: params.on };
+    case 'openclaw.set':
+      s.services.openclaw = { ...(s.services.openclaw ?? {}), on: params.on, ready: params.on, egress: params.on };
+      return { on: params.on };
     case 'proxy.set':
       s.network.proxy = { ...(s.network.proxy ?? {}), on: params.on };
       return { on: params.on };

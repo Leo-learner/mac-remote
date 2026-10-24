@@ -4,7 +4,7 @@ import { loadConfig } from './config.js';
 import { dispatch, READ_ONLY } from './registry.js';
 import { startRelayClient } from './relay-client.js';
 import { resumeStandbyWatch, wakeOnInput } from './controls/display.js';
-import { cachedDdcScreens, snapshot } from './state.js';
+import { cachedDdcScreens, cachedOpenClaw, snapshot } from './state.js';
 
 const VERSION = '0.1.0';
 const VIEWER_TICK_MS = 3000;
@@ -98,6 +98,7 @@ async function runLocal(line) {
   const { id, cmd, action, params } = request ?? {};
   try {
     if (cmd === 'screens') return report('reply', { id, ok: true, screens: (await cachedDdcScreens()) ?? [] });
+    if (cmd === 'openclaw') return report('reply', { id, ok: true, openclaw: (await cachedOpenClaw()) ?? false });
     if (cmd === 'input') return await wakeOnInput();
     const result = await dispatch(action, params ?? {}, { via: 'menu' });
     report('reply', { id, ok: true, result });

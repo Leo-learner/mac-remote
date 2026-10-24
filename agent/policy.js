@@ -25,6 +25,11 @@
 // Clash Verge's system proxy switch (proxy.set) replaced the NordVPN switch and its confirmation
 // on 2026-09-16. It runs unattended: the agent reaches the relay directly, so switching the system
 // proxy never cuts the phone off from the Mac.
+//
+// The OpenClaw switch (openclaw.set, owner's request 2026-10-24) runs unattended too: it only
+// starts and stops the owner's Telegram bot and its egress proxy, which nothing else here uses.
+// The one hard rule, never start the gateway outside its network sandbox, is a fact about the
+// launch file rather than a judgment call, so the handler checks it (controls/openclaw.js).
 
 const PROTECTED_APPS = new Set([
   'dev.mac-remote.launcher', // this remote control itself

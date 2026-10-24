@@ -990,6 +990,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var wakeTimer: Timer?
     private var sawQuiet = false
 
+    // OpenClaw, through the Orbit agent: the last state it reported, and a switch still on its way.
+    private var openclawItem: NSMenuItem!
+    private var openclaw: [String: Any]?
+    private var openclawRequest: (id: Int, on: Bool)?
+    private var openclawError: String?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One MacRemote at a time: a second launch (another copy, or a double click while it is
         // running) asks the running one to show its window and quits.
@@ -1038,6 +1044,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if keysEnabled { brightnessKeys.start() } // picks up an Accessibility grant made since launch
         refreshCaches(permissions: false)
         askScreens()
+        askOpenClaw()
         askTerminal("status")
         render()
     }
@@ -1087,6 +1094,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         brightnessItem = makeBrightnessItem()
         displayPowerItem = item("关闭显示器", #selector(toggleDisplayPower))
         keysItem = item("用键盘亮度键调节", #selector(toggleBrightnessKeys))
+        openclawItem = item("OpenClaw", #selector(toggleOpenClaw))
+        openclawItem.isHidden = true // until the agent says it is installed
         pairItem = item("配对新设备…", #selector(pair))
         orbitPauseItem = item("暂停远程控制", #selector(toggleOrbitPause))
         terminalPauseItem = item("暂停终端", #selector(toggleTerminalPause))
@@ -1099,6 +1108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(displayPowerItem)
         menu.addItem(keysItem)
         menu.addItem(.separator())
+        menu.addItem(openclawItem)
         menu.addItem(item("显示状态窗口…", #selector(showWindow)))
         menu.addItem(item("打开控制面板", #selector(openPanel)))
         menu.addItem(pairItem)
@@ -1312,9 +1322,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func handleOrbit(_ event: [String: Any]) {
         switch event["event"] as? String {
         case "status":
-            if event["status"] as? String == "connected" { askScreens() }
+            if event["status"] as? String == "connected" {
+                askScreens()
+                askOpenClaw()
+            }
         case "reply":
             if let screens = event["screens"] as? [[String: Any]] { applyScreens(screens) }
+            if event.keys.contains("openclaw") { applyOpenClaw(event["openclaw"] as? [String: Any], installed: event["openclaw"] as? Bool != false) }
+            if let request = openclawRequest, event["id"] as? Int == request.id {
+                openclawRequest = nil
+                openclawError = event["ok"] as? Bool == true ? nil : openclawFailure(event["error"] as? String, on: request.on)
+                askOpenClaw()
+                renderOpenClaw()
+            }
             if let request = displayRequest, event["id"] as? Int == request.id {
                 displayRequest = nil
                 if event["ok"] as? Bool != true { setDisplayAsleep(request.wasAsleep) } // the DDC write did not go through
@@ -1339,8 +1359,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    // MARK: OpenClaw
+
+    private func askOpenClaw() {
+        guard orbit.isRunning else { return }
+        askOrbit(["cmd": "openclaw"])
+    }
+
+    // The agent answers false when OpenClaw is not installed on this Mac.
+    private func applyOpenClaw(_ state: [String: Any]?, installed: Bool) {
+        openclaw = installed ? state : nil
+        openclawItem.isHidden = !installed
+        renderOpenClaw()
+    }
+
+    // Same path as the phone's switch: the agent's allow-list and policy, then launchctl. The menu
+    // closes on the click, so the outcome shows the next time it opens.
+    @objc private func toggleOpenClaw() {
+        guard openclawRequest == nil else { return }
+        let on = openclaw?["on"] as? Bool != true
+        openclawError = nil
+        openclawRequest = (askOrbit(["action": "openclaw.set", "params": ["on": on]]), on)
+        renderOpenClaw()
+    }
+
+    private func openclawFailure(_ code: String?, on: Bool) -> String {
+        switch code {
+        case "openclaw-unsandboxed": return "出网沙箱缺失，没有启动"
+        case "openclaw-egress-down": return "专用出口没能启动"
+        case "openclaw-busy": return "还在关闭，过几秒再开"
+        default: return on ? "没能开启" : "没能关闭"
+        }
+    }
+
+    private func renderOpenClaw() {
+        let on = openclaw?["on"] as? Bool == true
+        let status: String
+        if let request = openclawRequest {
+            status = request.on ? "正在开启…" : "正在关闭…"
+        } else if let openclawError {
+            status = openclawError
+        } else if openclaw?["sandboxed"] as? Bool == false {
+            status = on ? "运行中，出网沙箱缺失" : "出网沙箱缺失，不会启动"
+        } else if !on {
+            status = "已关闭"
+        } else if openclaw?["egress"] as? Bool != true {
+            status = "专用出口没在运行"
+        } else {
+            status = openclaw?["ready"] as? Bool == true ? "运行中" : "正在启动…"
+        }
+        retitle(openclawItem, "OpenClaw：\(status)")
+        openclawItem.state = on ? .on : .off
+        openclawItem.isEnabled = orbit.isRunning && openclawRequest == nil
+    }
+
     private func orbitExited() {
         showDisplayControls(false)
+        openclawRequest = nil
         watchForInput(false) // a restarted agent asks again if the monitor is still in standby
         displayRequest = nil
         quitIfStopped()

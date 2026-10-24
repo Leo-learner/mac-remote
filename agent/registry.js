@@ -4,6 +4,7 @@ import { audit } from './audit.js';
 import * as apps from './controls/apps.js';
 import * as display from './controls/display.js';
 import * as network from './controls/network.js';
+import * as openclaw from './controls/openclaw.js';
 import * as sound from './controls/sound.js';
 import { ActionError } from './exec.js';
 import { assessRisk } from './policy.js';
@@ -21,6 +22,7 @@ const HANDLERS = {
   'wifi.set': network.setWifi,
   'bluetooth.set': network.setBluetooth,
   'proxy.set': network.setSystemProxy,
+  'openclaw.set': openclaw.setOpenClaw,
   'display.brightness.set': display.setBrightness,
   'display.awake.set': display.setDisplayAwake,
   'display.dark.set': display.setDark,

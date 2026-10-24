@@ -26,6 +26,10 @@ const ERRORS = {
   'clash-not-running': 'Clash Verge 没在运行，现在开系统代理会让 Mac 上不了网',
   'clash-pac-mode': 'Clash Verge 用的是 PAC 模式，暂不支持远程切换',
   'no-network-service': '找不到 Mac 当前使用的网络',
+  'openclaw-not-installed': '这台 Mac 上没有 OpenClaw',
+  'openclaw-unsandboxed': 'OpenClaw 的出网沙箱不见了（可能重装过服务），开起来会绕过代理直连，所以不启动',
+  'openclaw-egress-down': 'OpenClaw 的专用出口没能启动，OpenClaw 就先不开',
+  'openclaw-busy': 'OpenClaw 还在关闭，过几秒再开',
   'no-such-display': '找不到这个显示器',
   'no-ddc-display': '没有找到能用 DDC 控制的外接显示器',
   'ddc-write-failed': '显示器没有接受这条指令',
@@ -212,6 +216,20 @@ const TOGGLES = {
       return proxy.elsewhere ? '指向其他代理' : '已关闭';
     },
     run: (next) => act('proxy.set', { on: next }),
+  },
+  openclaw: {
+    on: (s) => Boolean(s.services?.openclaw?.on),
+    available: (s) => Boolean(s.capabilities?.openclaw),
+    sub: (s) => {
+      const claw = s.services?.openclaw;
+      // Short enough for the row on a phone: the menu bar item says more.
+      if (!claw) return '未安装';
+      if (!claw.sandboxed) return '沙箱缺失';
+      if (!claw.on) return '已关闭';
+      if (!claw.egress) return '出口未运行';
+      return claw.ready ? '运行中' : '正在启动…';
+    },
+    run: (next) => act('openclaw.set', { on: next }),
   },
   dark: {
     on: (s) => Boolean(s.display?.dark),

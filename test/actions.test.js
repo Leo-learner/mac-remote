@@ -7,6 +7,7 @@ test('accepts well-formed params', () => {
   assert.deepEqual(validateParams('apps.open', { bundleId: 'com.apple.Safari' }).ok, true);
   assert.deepEqual(validateParams('wifi.set', { on: false }), { ok: true, params: { on: false } });
   assert.deepEqual(validateParams('proxy.set', { on: false }), { ok: true, params: { on: false } });
+  assert.deepEqual(validateParams('openclaw.set', { on: true }), { ok: true, params: { on: true } });
   assert.deepEqual(validateParams('display.awake.set', { on: false }), { ok: true, params: { on: false } });
   assert.deepEqual(validateParams('state.get'), { ok: true, params: {} });
 });
@@ -26,6 +27,8 @@ test('rejects unknown keys, including prototype tricks', () => {
   assert.equal(validateParams('sound.volume.set', JSON.parse('{"value":5,"__proto__":{"x":1}}')).error, 'unexpected:__proto__');
   // The phone only says on or off; where the proxy points comes from Clash Verge on the Mac.
   assert.equal(validateParams('proxy.set', { on: true, host: '203.0.113.9' }).error, 'unexpected:host');
+  // On or off only: which services, and how they start, is fixed on the Mac.
+  assert.equal(validateParams('openclaw.set', { on: true, label: 'com.example.other' }).error, 'unexpected:label');
 });
 
 test('string patterns block path and control characters', () => {

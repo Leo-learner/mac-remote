@@ -13,6 +13,8 @@ export const BIN = {
   pmset: '/usr/bin/pmset',
   route: '/sbin/route',
   sh: '/bin/sh',
+  launchctl: '/bin/launchctl',
+  plutil: '/usr/bin/plutil',
   blueutil: '/opt/homebrew/bin/blueutil',
   m1ddc: '/opt/homebrew/bin/m1ddc',
   macctl: fileURLToPath(new URL('../bin/macctl', import.meta.url)),

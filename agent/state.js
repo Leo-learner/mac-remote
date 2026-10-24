@@ -2,6 +2,7 @@
 // every tick, slow ones less often. Actions invalidate exactly the readers they affect.
 import * as display from './controls/display.js';
 import * as network from './controls/network.js';
+import * as openclaw from './controls/openclaw.js';
 import * as sound from './controls/sound.js';
 import * as system from './controls/system.js';
 import { SELF_BUNDLE_ID } from './config.js';
@@ -15,6 +16,7 @@ const READERS = {
   // blueutil aborts (and writes a crash report) without permission: back off after a failure.
   bluetooth: { ttl: 10_000, retryAfterFailure: 5 * 60_000, read: network.getBluetooth },
   proxy: { ttl: 5_000, read: network.getSystemProxy }, // Clash Verge's system proxy
+  openclaw: { ttl: 3_000, read: openclaw.getOpenClaw }, // short: "starting" turns into "running" in seconds
   dark: { ttl: 5_000, read: display.getDark },
   stageManager: { ttl: 5_000, read: display.getStageManager },
   // A DDC read takes seconds (replies are queued 400 ms apart), so it refreshes in the background.
@@ -27,6 +29,7 @@ const INVALIDATES = {
   'wifi.set': ['wifi', 'uplink'],
   'bluetooth.set': ['bluetooth'],
   'proxy.set': ['proxy'],
+  'openclaw.set': ['openclaw'],
   // An external monitor's level lives in the DDC reading only. Re-reading the native state (apps,
   // audio, the built-in panel) after every step of a drag would make the next step's policy check
   // wait for it.
@@ -75,6 +78,8 @@ function read(name) {
 
 // The launcher's brightness slider reads the same cached value the phone's snapshot uses.
 export const cachedDdcScreens = () => read('ddc');
+// So does its OpenClaw item.
+export const cachedOpenClaw = () => read('openclaw');
 
 // The readers an action makes stale.
 export function invalidatedBy(action, params = {}) {
@@ -102,6 +107,7 @@ export async function snapshot() {
     capabilities: {
       bluetooth: values.bluetooth !== null,
       systemProxy: values.proxy !== null,
+      openclaw: values.openclaw !== null,
       brightness: screens.length > 0,
       nightShift: Boolean(native.nightShift),
       stageManager: values.stageManager !== null,
@@ -119,6 +125,7 @@ export async function snapshot() {
       stageManager: values.stageManager,
       screens,
     },
+    services: { openclaw: values.openclaw },
     sound: { ...(values.volume ?? { volume: null, muted: false }), outputs: native.audioOutputs ?? [] },
     apps: native.apps ?? [],
     battery: values.battery,

@@ -1,6 +1,6 @@
 # mac-remote
 
-用手机网页控制这台 Mac：打开 / 切换 / 隐藏 / 退出应用，以及控制中心里的 Wi-Fi、蓝牙、Clash Verge 系统代理、亮度（含一键让外接显示器待机）、深色模式、夜览、台前调度、音量、输出设备和媒体键。
+用手机网页控制这台 Mac：打开 / 切换 / 隐藏 / 退出应用，以及控制中心里的 Wi-Fi、蓝牙、Clash Verge 系统代理、OpenClaw 开关、亮度（含一键让外接显示器待机）、深色模式、夜览、台前调度、音量、输出设备和媒体键。
 
 ```
 手机浏览器 ──HTTPS──▶ nginx(TLS) ──▶ relay (Node, 127.0.0.1:3030)                         [Azure]
@@ -94,6 +94,7 @@ Mac 重新配对（`node agent/setup.js wss://control.dkz12345.com/agent --force
 - Wi-Fi 只能远程打开，**不能远程关闭**（关掉就失联了）。
 - **MacRemote 自己和 Clash Verge 不能被远程退出**。
 - 强制退出要在手机上**确认**。Clash Verge 系统代理的开关直接执行：agent 直连中继、不走系统代理，开关它不会让手机失联；开启前会先检查 Clash 是否在监听，免得 Mac 上的应用断网。
+- OpenClaw 的开关（手机和菜单栏都有）也直接执行：开 = 先起专用出口 `ai.openclaw.egress`、再起网关 `ai.openclaw.gateway`；关 = 反过来停，并在 launchd 里禁用，所以关掉后重新登录也不会自己起来。网关的启动文件如果没有 `sandbox-exec` 出网沙箱前缀（比如有人跑了 `openclaw gateway install --force`），开关拒绝启动它，免得 OpenClaw 绕过代理直连（`agent/controls/openclaw.js`）。
 - **没有关机、重启、睡眠**：动作目录里根本没有这类动作；`test/power.test.js` 会扫描动作目录和 agent 源码，一旦有人加进来就报错。
 
 对应测试：`test/policy.test.js`、`test/power.test.js`。

@@ -55,3 +55,8 @@ test('force-quitting an ordinary app asks first', () => {
 test("switching Clash Verge's system proxy runs without confirmation", () => {
   for (const on of [true, false]) assert.ok(runsUnattended(assessRisk('proxy.set', { on }, ctx)), `on=${on}`);
 });
+
+// Owner's request, 2026-10-24. The sandbox check is the handler's (controls/openclaw.js).
+test('switching OpenClaw runs without confirmation', () => {
+  for (const on of [true, false]) assert.ok(runsUnattended(assessRisk('openclaw.set', { on }, ctx)), `on=${on}`);
+});
