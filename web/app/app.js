@@ -393,7 +393,6 @@ const screenFaders = new Map();
 function renderBrightness(state) {
   const screens = state.display?.screens ?? [];
   $('#brightness-tile').hidden = screens.length === 0;
-  $('#brightness-name').textContent = screens.length === 1 ? screens[0].name : '';
   const stack = $('#brightness-faders');
   for (const screen of screens) {
     let entry = screenFaders.get(screen.id);
